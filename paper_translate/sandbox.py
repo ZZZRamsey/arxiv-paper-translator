@@ -19,7 +19,8 @@ def _executable(name):
     ])
     for candidate in candidates:
         if candidate.is_file() and os.access(candidate, os.X_OK):
-            return candidate.resolve()
+            # Keep the pdflatex/xelatex symlink name so TeX selects the right format.
+            return candidate.absolute()
     return None
 
 
@@ -56,6 +57,7 @@ def command_for(source, output, engine_args, engine=None):
     if engine == "tectonic" and not cache.is_dir():
         raise ValueError("请先用可信的本地文档初始化 Tectonic 宏包缓存")
     reads = [source.resolve(), output.resolve(), executable,
+             executable.parent, executable.parent.parent, executable.parent.parent.parent,
              Path("/Library/TeX"), Path("/usr/local/texlive"),
              Path("/System"), Path("/usr/lib"), Path("/usr/share"),
              Path("/private/var/db"), Path("/Library/Fonts"),
@@ -65,6 +67,14 @@ def command_for(source, output, engine_args, engine=None):
              Path("/usr/local/opt")]
     if cache.is_dir():
         reads.append(cache.resolve())
+    for name in ("TEXMFHOME", "TEXMFVAR", "TEXMFCONFIG", "TEXMFROOT",
+                 "TEXMFCNF", "TEXMFSYSVAR", "TEXMFSYSCONFIG"):
+        value = os.getenv(name)
+        if value:
+            for item in value.split(os.pathsep):
+                path = Path(item).expanduser()
+                if path.exists():
+                    reads.append(path.resolve())
     reads = [
         path for path in reads if path.exists()
     ]
@@ -78,9 +88,13 @@ def command_for(source, output, engine_args, engine=None):
     ])
     env = {
         "HOME": str(Path.home()),
-        "PATH": "/Library/TeX/texbin:/usr/local/texlive/bin/universal-darwin:/usr/bin:/bin",
+        "PATH": f"{executable.parent}:/Library/TeX/texbin:/usr/local/texlive/bin/universal-darwin:/usr/bin:/bin",
         "TMPDIR": str(output.resolve()), "LANG": os.getenv("LANG", "en_US.UTF-8"),
     }
+    for name in ("TEXMFHOME", "TEXMFVAR", "TEXMFCONFIG", "TEXMFROOT", "TEXMFCNF",
+                 "TEXMFSYSVAR", "TEXMFSYSCONFIG"):
+        if os.getenv(name):
+            env[name] = os.environ[name]
     command = ["/usr/bin/sandbox-exec", "-p", profile, str(executable)]
     if engine == "tectonic":
         command.extend(["--untrusted", "--only-cached"])

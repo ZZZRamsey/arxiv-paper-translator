@@ -117,6 +117,7 @@ def build(root, target, log, source=None, engine=None):
             if aux.is_file() and r"\bibdata" in aux.read_text(encoding="utf-8", errors="replace"):
                 command, environment = command_for(source, target, [root.stem], engine="bibtex")
                 environment["BIBINPUTS"] = f"{root.parent}:{target}:"
+                environment["BSTINPUTS"] = f"{root.parent}:{target}:"
                 stream.write("\n=== bibtex ===\n")
                 result = subprocess.run(command, cwd=target, stdout=stream,
                                         stderr=subprocess.STDOUT, timeout=360, env=environment)
@@ -190,8 +191,9 @@ def configure_chinese(tex, font):
             "\\setsansfont{Arial}\n"
             "\\setmonofont{Courier New}\n"
         )
-    preamble = package + "".join(f"\\setCJK{family}font{{{font}}}\n"
-                                 for family in ("main", "sans", "mono"))
+    # A single CJK main font avoids option/font-family conflicts in styles that
+    # already define their own sans and monospaced font families.
+    preamble = package + f"\\setCJKmainfont{{{font}}}\n"
     return re.sub(r"(?m)^[ \t]*\\begin\{document\}", lambda m: preamble + m[0], tex, count=1)
 
 
@@ -218,6 +220,12 @@ def patch_pdftex_styles(root):
             r"\RequirePDFTeX",
             "% PDFLaTeX guard disabled for the Unicode translation build",
         )
+        for command in (r"\RequirePackage[T1]{fontenc}", r"\RequirePackage{newtxtext}",
+                        r"\RequirePackage{helvet}", r"\RequirePackage{courier}"):
+            patched = patched.replace(
+                command,
+                "% PDFLaTeX font package disabled for the Unicode translation build",
+            )
         if patched != text:
             path.write_text(patched, encoding="utf-8")
             changed.append(path)
@@ -314,7 +322,7 @@ def run(args, key):
     compatibility_patches = []
     if baseline_engine == "pdflatex":
         compatibility_patches = patch_pdftex_styles(translated)
-        edited.update(path.relative_to(original).as_posix() for path in compatibility_patches)
+        edited.update(path.relative_to(translated).as_posix() for path in compatibility_patches)
     for name, checksum in original_files.items():
         if name not in edited and digest((translated / name).read_bytes()) != checksum:
             raise ValueError(f"未经翻译的源码或资源发生变动：{name}")

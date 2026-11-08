@@ -5,7 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from paper_translate.cli import main
+from paper_translate.cli import enable_xetex_translation, main, patch_pdftex_styles
+from paper_translate.sandbox import detect_engine
 from paper_translate.source import check_download_url, extract, normalize
 from paper_translate.translate import Translator, bilingual_title, mask, plan, restore
 from paper_translate.verify import publish
@@ -42,6 +43,20 @@ class SourceTests(unittest.TestCase):
 
 
 class TranslationTests(unittest.TestCase):
+    def test_pdftex_guard_uses_pdftex_for_baseline_and_xetex_for_translation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp)
+            root = source / "main.tex"
+            style = source / "aaai.sty"
+            root.write_text("\\documentclass{article}\n", encoding="utf-8")
+            style.write_text("\\RequirePDFTeX\n", encoding="utf-8")
+            self.assertEqual(detect_engine(source, root), "pdflatex")
+            translated = enable_xetex_translation(root.read_text())
+            root.write_text(translated, encoding="utf-8")
+            changed = patch_pdftex_styles(source)
+            self.assertEqual([path.name for path in changed], ["aaai.sty"])
+            self.assertEqual(detect_engine(source, root), "tectonic")
+
     def test_bilingual_title_preserves_original_tex_and_short_title(self):
         original = "\\title[Short]{The \\emph{Original}}\n\\begin{document}"
         translated = "\\title[Short]{中文标题}\n\\begin{document}"
@@ -116,12 +131,14 @@ class TranslationTests(unittest.TestCase):
 
 
 class PublicationTests(unittest.TestCase):
-    def test_public_defaults_use_relative_output_and_no_implicit_key(self):
+    def test_public_defaults_ignore_local_key_and_output(self):
         with patch("sys.argv", ["arxiv-translate", "2503.09516",
-                                "--max-requests", "0"]), \
+                                "--public-defaults", "--max-requests", "0"]), \
                 patch.dict("os.environ", {}, clear=True), \
+                patch("paper_translate.cli.local_settings") as local, \
                 patch("paper_translate.cli.run") as run:
             main()
+            local.assert_not_called()
             args, key = run.call_args.args
             self.assertEqual(args.output, Path("output"))
             self.assertFalse(args.save_source)

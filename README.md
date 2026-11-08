@@ -10,7 +10,7 @@
 
 ### 1. 安装
 
-需要 **macOS**（含 `sandbox-exec`）、**Python 3.9+**、Tectonic、Poppler 和可用的中文字体。默认字体为 `Songti SC`。
+需要 **macOS**（含 `sandbox-exec`）、**Python 3.9+**、Tectonic、BasicTeX 或 MacTeX、Poppler 和可用的中文字体。默认字体为 `Songti SC`。
 
 如果使用 Homebrew，可安装 [Tectonic](https://formulae.brew.sh/formula/tectonic) 和 [Poppler](https://formulae.brew.sh/formula/poppler)：
 
@@ -35,7 +35,7 @@ arxiv-translate https://arxiv.org/pdf/2503.09516
 
 首次交互运行时，终端会提示输入 OpenRouter API key，输入内容不会回显。批处理可由运行环境提供 `OPENROUTER_API_KEY`。翻译请求会将待译文本发送给 OpenRouter，并使用对应账户的额度。
 
-编译使用 **Tectonic 本地宏包缓存**，在隔离环境中离线运行。首次运行若提示缺少宏包，请先用可信的本地 LaTeX 文档预热所需依赖，再重试。旧版缓存无法提供的依赖可用 `--tex-overlay` 补充。
+编译使用 **Tectonic 本地宏包缓存**，在隔离环境中离线运行。源码明确要求 PDFLaTeX 时，英文基线自动使用 BasicTeX/MacTeX，中文翻译副本使用 Unicode XeTeX 并应用兼容补丁。首次运行若提示缺少宏包，请先用可信的本地 LaTeX 文档预热所需依赖，或用 BasicTeX 的 `tlmgr --usermode install <package>` 安装到用户 TeX 树，再重试。旧版缓存无法提供的依赖可用 `--tex-overlay` 补充。
 
 ## 常用参数
 

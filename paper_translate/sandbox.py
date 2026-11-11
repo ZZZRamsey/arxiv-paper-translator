@@ -8,12 +8,13 @@ import sys
 from pathlib import Path
 
 
-def _executable(name):
+def find_executable(name):
     candidates = []
     found = shutil.which(name)
     if found:
         candidates.append(Path(found))
     candidates.extend([
+        Path(sys.executable).parent / name,
         Path("/Library/TeX/texbin") / name,
         Path("/usr/local/texlive/bin/universal-darwin") / name,
     ])
@@ -46,9 +47,9 @@ def command_for(source, output, engine_args, engine=None):
     if sys.platform != "darwin" or not Path("/usr/bin/sandbox-exec").is_file():
         raise ValueError("隔离编译需要 macOS sandbox-exec")
     engine = engine or detect_engine(source)
-    if engine not in {"tectonic", "pdflatex", "bibtex"}:
+    if engine not in {"tectonic", "pdflatex", "xelatex", "bibtex"}:
         raise ValueError(f"不支持的 TeX 编译引擎：{engine}")
-    executable = _executable(engine)
+    executable = find_executable(engine)
     if not executable:
         if engine == "pdflatex":
             raise ValueError("源码要求 PDFLaTeX，但当前环境未找到 pdflatex。请安装 BasicTeX 或 MacTeX")
@@ -57,7 +58,6 @@ def command_for(source, output, engine_args, engine=None):
     if engine == "tectonic" and not cache.is_dir():
         raise ValueError("请先用可信的本地文档初始化 Tectonic 宏包缓存")
     reads = [source.resolve(), output.resolve(), executable,
-             executable.parent, executable.parent.parent, executable.parent.parent.parent,
              Path("/Library/TeX"), Path("/usr/local/texlive"),
              Path("/System"), Path("/usr/lib"), Path("/usr/share"),
              Path("/private/var/db"), Path("/Library/Fonts"),
@@ -65,6 +65,10 @@ def command_for(source, output, engine_args, engine=None):
              Path.home() / "Library/texlive", Path("/opt/homebrew/Cellar"),
              Path("/usr/local/Cellar"), Path("/opt/homebrew/opt"),
              Path("/usr/local/opt")]
+    # A relocatable TeX Live tree may live outside the standard installation paths.
+    tex_root = executable.resolve().parent.parent.parent
+    if (tex_root / "texmf-dist").is_dir():
+        reads.append(tex_root)
     if cache.is_dir():
         reads.append(cache.resolve())
     for name in ("TEXMFHOME", "TEXMFVAR", "TEXMFCONFIG", "TEXMFROOT",

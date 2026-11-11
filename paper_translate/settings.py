@@ -13,7 +13,9 @@ def local_settings():
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError("本地配置需要 JSON 对象")
-    for name in ("output", "api_key", "pdftoppm", "tex_overlay"):
+    if not isinstance(data.get("local", False), bool):
+        raise ValueError("本地配置字段 local 必须是 true 或 false")
+    for name in ("output", "api_key", "pdftoppm", "tex_overlay", "local_model"):
         if name in data and not isinstance(data[name], str):
             raise ValueError(f"本地配置字段 {name} 必须是字符串")
     overlays = data.get("tex_overlays", {})

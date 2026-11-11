@@ -19,11 +19,14 @@ import requests
 from pypdf.errors import PdfReadError
 
 from .source import digest, extract, fetch, lock_version, normalize, validate_pdf
-from .sandbox import command_for, detect_engine
+from .sandbox import command_for, detect_engine, find_executable
 from .navigation import HOOK, build_with_returns
-from .translate import DEFAULT_MODEL, Translator, bilingual_title, title_content
+from .translate import (DEFAULT_MODEL, LOCAL_HOST, LOCAL_MODEL, Translator,
+                        bilingual_title, title_content)
 from .verify import check_titles, direct_links, inspect_pdf, render_hashes, verify_bibliography
+from .zotero import attach_pdf as attach_to_zotero
 from .settings import local_settings
+from .ollama import ensure_server
 
 COMMENT = re.compile(r"(?<!\\)%[^\n]*")
 INPUT = re.compile(r"\\(?:input|include|subfile)(?![A-Za-z@])\s*(?:\{([^{}]+)\}|([^\s%{}\\]+))")
@@ -96,8 +99,8 @@ def build(root, target, log, source=None, engine=None):
     if engine == "tectonic":
         engine_args = ["--keep-logs", "--outdir", str(target), "--", root.name]
         working_directory = root.parent
-    elif engine == "pdflatex":
-        engine_args = ["-interaction=nonstopmode", "-halt-on-error", "-file-line-error",
+    elif engine in ("pdflatex", "xelatex"):
+        engine_args = ["-no-shell-escape", "-interaction=nonstopmode", "-halt-on-error", "-file-line-error",
                        "-output-directory", str(target), root.name]
         working_directory = root.parent
     else:
@@ -112,7 +115,7 @@ def build(root, target, log, source=None, engine=None):
                                     stderr=subprocess.STDOUT, timeout=360, env=environment)
             if result.returncode:
                 break
-        if result and result.returncode == 0 and engine == "pdflatex":
+        if result and result.returncode == 0 and engine in ("pdflatex", "xelatex") and not root.with_suffix(".bbl").is_file():
             aux = target / f"{root.stem}.aux"
             if aux.is_file() and r"\bibdata" in aux.read_text(encoding="utf-8", errors="replace"):
                 command, environment = command_for(source, target, [root.stem], engine="bibtex")
@@ -172,14 +175,31 @@ def add_local_dependencies(directory, root):
     return {relative.as_posix(): digest(source.read_bytes()) for source, relative in files}
 
 
-def configure_chinese(tex, font):
+def configure_chinese(tex, font, preserve_layout=False):
     if not re.fullmatch(r"[\w .-]+", font):
         raise ValueError("无效的中文字体名称")
-    tex = re.sub(r"(?m)^([ \t]*)\\linenumbers\b(?:\[[^\]\n]*\])?", r"\1", tex)
+    if not preserve_layout:
+        tex = re.sub(r"(?m)^([ \t]*)\\linenumbers\b(?:\[[^\]\n]*\])?", r"\1", tex)
     if re.search(r"\\usepackage(?:\[[^\]]*\])?\{xeCJK\}", COMMENT.sub("", tex)):
         package = ""
     else:
         package = "\\usepackage{xeCJK}\n"
+    # xeCJK provides Unicode text directly. Preserve legacy CJK group scopes.
+    tex = re.sub(r"(?m)^[ \t]*\\usepackage\{CJKutf8\}", lambda _:
+                 r"\newenvironment{CJK}[2]{}{}" + "\n" + r"\newenvironment{CJK*}[2]{}{}", tex)
+    # axessibility's accsupp driver also sets pdfTeX-only output parameters.
+    # XeTeX writes Unicode mappings through xdvipdfmx. Keep the math tagging
+    # macros and limit the compatibility definitions to loading that package.
+    axessibility = re.compile(r"(?m)^[ \t]*\\usepackage\[accsupp\]\{axessibility\}")
+    def load_axessibility(match):
+        commands = ("pdfcompresslevel", "pdfoptionpdfminorversion", "pdfgentounicode")
+        before = [r"\newcount\aptPDFsetting"]
+        before.extend("\\let\\" + name + r"\aptPDFsetting" for name in commands)
+        before.append(r"\def\pdfglyphtounicode#1#2{}")
+        after = ["\\let\\" + name + r"\undefined"
+                 for name in (*commands, "pdfglyphtounicode")]
+        return "\n".join([*before, match[0], *after])
+    tex = axessibility.sub(load_axessibility, tex, count=1)
     # The legacy Times package selects 8-bit fonts that drop Unicode characters
     # in references, code examples and prose under XeTeX.
     legacy_times = re.search(r"(?m)^[ \t]*\\usepackage\{times\}", tex)
@@ -232,10 +252,19 @@ def patch_pdftex_styles(root):
     return changed
 
 
+def output_paths(output, version, short_name):
+    stem = re.sub(r"v\d+$", "", version).replace("/", "_") + "_zh_CN"
+    # arXiv names may contain slashes (e.g. model variants); keep them in one component.
+    safe_name = re.sub(r"[^\w.+-]+", "-", short_name or "").strip(" .-")
+    # Leave room for the arXiv identifier and extensions on byte-limited filesystems.
+    safe_name = safe_name.encode("utf-8")[:120].decode("utf-8", errors="ignore").rstrip(".-")
+    suffix = "_" + safe_name if safe_name else ""
+    return output / (stem + suffix + ".pdf"), output / (stem + "_latex" + suffix + ".zip")
+
+
 def run(args, key):
     started = time.monotonic()
-    if sys.platform != "darwin" or not (shutil.which("tectonic") or shutil.which("pdflatex")
-                                         or Path("/Library/TeX/texbin/pdflatex").is_file()):
+    if sys.platform != "darwin" or not (find_executable("tectonic") or find_executable("pdflatex")):
         raise ValueError("隔离编译需要 macOS，并安装 Tectonic 或 BasicTeX/MacTeX")
     renderer = args.pdftoppm or shutil.which("pdftoppm")
     if not renderer or not os.access(renderer, os.X_OK):
@@ -244,13 +273,20 @@ def run(args, key):
     print("正在解析 arXiv 输入并锁定版本", flush=True)
     identifier = normalize(args.paper)
     version, lookup = lock_version(identifier)
-    stem = re.sub(r"v\d+$", "", version).replace("/", "_") + "_zh_CN"
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
-    destination = output / (stem + ".pdf")
-    zip_destination = output / (stem + "_latex.zip")
-    if destination.exists() or (args.save_source and zip_destination.exists()):
-        raise ValueError(f"输出文件已存在：{destination}")
+    if args.local and args.max_requests:
+        ensure_server(args.local, args.jobs)
+    translator = Translator(key, args.model, output / ".translation-cache", args.max_requests,
+                            local=args.local, chatgpt=args.chatgpt)
+    print("正在根据标题和摘要提取论文简称", flush=True)
+    short_name = translator.short_name(lookup["title"], lookup["abstract"])
+    translator.review = bool(args.local and not args.no_review)
+    translator.prepare(lookup["title"], lookup["abstract"])
+    destination, zip_destination = output_paths(output, version, short_name)
+    for path in ([destination, zip_destination] if args.save_source else [destination]):
+        if path.exists():
+            raise ValueError(f"输出文件已存在：{path}")
     work_root = output / ".arxiv-work"
     work_root.mkdir(exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix=f"{version.replace('/', '_')}-", dir=work_root))
@@ -287,7 +323,8 @@ def run(args, key):
     else:
         build_source, dependencies = original, {}
     print(f"英文基线编译：{relative_root}", flush=True)
-    baseline_engine = detect_engine(build_source, build_source / relative_root)
+    requires_pdftex = detect_engine(build_source, build_source / relative_root) == "pdflatex"
+    baseline_engine = "pdflatex" if args.texlive or requires_pdftex else "tectonic"
     baseline, baseline_pages = build(build_source / relative_root, work / "baseline",
                                      work / "baseline.log", build_source, baseline_engine)
     download_and_baseline_seconds = round(time.monotonic() - started, 3)
@@ -301,7 +338,6 @@ def run(args, key):
     documents = input_tree(root, original)
     if not documents:
         raise ValueError("未找到可翻译的文档")
-    translator = Translator(key, args.model, output / ".translation-cache", args.max_requests)
     translation_start = time.monotonic()
     translations = translator.translate_all(documents, args.jobs)
     translation_seconds = round(time.monotonic() - translation_start, 3)
@@ -311,30 +347,35 @@ def run(args, key):
     translated_title = translations[root][slice(*translated_title_bounds)].strip()
     for path, content in translations.items():
         if path == root:
-            content = bilingual_title(documents[path][0], content)
-            content = configure_chinese(content, args.font)
-            if baseline_engine == "pdflatex":
+            if not args.original_layout:
+                content = bilingual_title(documents[path][0], content)
+            content = configure_chinese(content, args.font, args.original_layout)
+            if requires_pdftex:
                 content = enable_xetex_translation(content)
-            content = re.sub(r"(?m)^[ \t]*\\begin\{document\}",
+            if not args.original_layout:
+                content = re.sub(r"(?m)^[ \t]*\\begin\{document\}",
                              lambda match: HOOK + match[0], content, count=1)
         (translated / path.relative_to(original)).write_text(content, encoding="utf-8")
     edited = {path.relative_to(original).as_posix() for path in translations}
     compatibility_patches = []
-    if baseline_engine == "pdflatex":
+    if requires_pdftex:
         compatibility_patches = patch_pdftex_styles(translated)
         edited.update(path.relative_to(translated).as_posix() for path in compatibility_patches)
     for name, checksum in original_files.items():
         if name not in edited and digest((translated / name).read_bytes()) != checksum:
             raise ValueError(f"未经翻译的源码或资源发生变动：{name}")
     print("中文编译", flush=True)
-    translation_engine = "tectonic" if baseline_engine == "pdflatex" else baseline_engine
-    pdf, pages = build_with_returns(
-        translated / relative_root,
-        lambda: build(translated / relative_root, work / "compiled", work / "chinese.log",
-                      translated, translation_engine),
-    )
+    translation_engine = "xelatex" if args.texlive else "tectonic"
+    def compile_translation():
+        return build(translated / relative_root, work / "compiled", work / "chinese.log",
+                     translated, translation_engine)
+
+    if args.original_layout:
+        pdf, pages = compile_translation()
+    else:
+        pdf, pages = build_with_returns(translated / relative_root, compile_translation)
     navigation = direct_links(pdf)
-    titles = check_titles(pdf, original_title, translated_title)
+    titles = check_titles(pdf, None if args.original_layout else original_title, translated_title)
     bibliography_entries = verify_bibliography(baseline, pdf)
     compile_log = pdf.with_suffix(".log").read_text(encoding="utf-8", errors="replace")
     if re.search(r"Missing character:|There were undefined (?:references|citations)", compile_log):
@@ -345,7 +386,7 @@ def run(args, key):
     findings = []
     if original_inspection["geometry"] != inspection["geometry"]:
         findings.append("中文 PDF 的分页或页面尺寸与原版不同")
-    if not all(navigation["links"].values()):
+    if not args.original_layout and not all(navigation["links"].values()):
         findings.append("缺少 skill 要求的逐次双向引用导航")
     if not inspection["han_characters"]:
         findings.append("PDF 中无法提取中文文字")
@@ -354,6 +395,7 @@ def run(args, key):
     info = {
         "input": args.paper, "version": version, "lookup": lookup, "pdf": pdf_meta,
         "source": source_meta, "source_attempt_errors": errors, "model": args.model,
+        "original_layout": args.original_layout, "backend": translator.provider, "short_name": short_name,
         "compiler": {"baseline": baseline_engine, "translation": translation_engine},
         "font": args.font, "root": relative_root.as_posix(),
         "pages": {"arxiv": original_pages, "baseline": baseline_pages, "translation": pages},
@@ -367,7 +409,7 @@ def run(args, key):
         "titles": {"original": original_title, "translated": translated_title, "checks": titles},
         "bibliography_entries": bibliography_entries,
         "requests": translator.requests, "cache_hits": translator.hits,
-        "openrouter_reported_usage": translator.usage,
+        "reported_usage": translator.usage,
         "seconds": {"download_and_baseline": download_and_baseline_seconds,
                     "translation": translation_seconds},
     }
@@ -431,20 +473,37 @@ def run(args, key):
     else:
         os.link(pdf, destination)
     print(f"PDF 已保存：{destination}", flush=True)
+    if getattr(args, "zotero", False):
+        paper_id = re.sub(r"v\d+$", "", identifier)
+        print("正在查找对应的 Zotero 条目并上传译文 PDF", flush=True)
+        attachment_key = attach_to_zotero(destination, paper_id, lookup["title"])
+        print(f"Zotero 附件已保存：{attachment_key}", flush=True)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="使用 OpenRouter 翻译 arXiv LaTeX 源码")
+    parser = argparse.ArgumentParser(description="使用当前 ChatGPT 会话、OpenRouter 或 Ollama 翻译 arXiv LaTeX 源码")
     parser.add_argument("paper", help="arXiv 编号或 abs/pdf URL")
-    parser.add_argument("--model", default=os.getenv("OPENROUTER_MODEL") or DEFAULT_MODEL)
+    backends = parser.add_mutually_exclusive_group()
+    backends.add_argument("--chatgpt", type=Path, metavar="DIR",
+                          help="由当前 ChatGPT 会话通过 DIR 读取请求并回写译文")
+    backends.add_argument("--local", action="store_true",
+                        help="用本机 Ollama 模型翻译，不需要 API key，译文不出本机")
+    parser.add_argument("--no-review", action="store_true",
+                        help="本地模式下跳过逐段复核，耗时约减半，误译略多")
+    parser.add_argument("--model", help=f"模型 ID；本地模式默认 {LOCAL_MODEL}")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--original-layout", action="store_true", help="沿用原文标题版式、行号及引用样式")
+    parser.add_argument("--texlive", action="store_true", help="使用本机 TeX Live 的 PDFLaTeX 和 XeLaTeX 编译原稿与译稿")
     parser.add_argument("--root", help="根 TeX 在 arXiv 源码包中的相对路径")
     parser.add_argument("--font", default="Songti SC")
-    parser.add_argument("--jobs", type=int, choices=range(1, 9), default=4, metavar="1-8")
+    parser.add_argument("--jobs", type=int, choices=range(1, 9), metavar="1-8",
+                        help="并发数，默认 4")
     parser.add_argument("--max-requests", type=int, default=500)
     parser.add_argument("--pdftoppm", type=Path, help="Poppler pdftoppm 路径")
     parser.add_argument("--tex-overlay", type=Path, help="可信的本地 TeX 依赖目录，不覆盖原稿")
     parser.add_argument("--save-source", action="store_true", help="额外保存 LaTeX 源码 ZIP")
+    parser.add_argument("--zotero", action="store_true",
+                        help="翻译完成后，通过 Zotero 本机 API 自动挂到对应论文条目")
     parser.add_argument("--strict", action="store_true", help="人工复核未完成时保留工作产物，禁止发布")
     parser.add_argument("--public-defaults", action="store_true", help="忽略本机固定配置")
     args = parser.parse_args()
@@ -462,11 +521,28 @@ def main():
             overlay = config["tex_overlays"].get(paper_id)
             if overlay:
                 args.tex_overlay = Path(overlay)
-        key = os.getenv("OPENROUTER_API_KEY") or config.get("api_key")
-        if not key and args.max_requests and sys.stdin.isatty():
-            key = getpass.getpass("OpenRouter API key: ")
-        if not key and args.max_requests:
-            raise ValueError("请设置 OPENROUTER_API_KEY")
+        local = args.local or config.get("local") is True
+        if args.chatgpt:
+            args.local = None
+            args.model = args.model or "chatgpt-current-session"
+            args.jobs = args.jobs or 4
+            key = ""
+        elif local:
+            host = os.getenv("OLLAMA_HOST") or LOCAL_HOST
+            args.local = host if "://" in host else "http://" + host
+            args.model = (args.model or os.getenv("OLLAMA_MODEL")
+                          or config.get("local_model") or LOCAL_MODEL)
+            args.jobs = args.jobs or 4
+            key = ""
+        else:
+            args.local = None
+            args.model = args.model or os.getenv("OPENROUTER_MODEL") or DEFAULT_MODEL
+            args.jobs = args.jobs or 4
+            key = os.getenv("OPENROUTER_API_KEY") or config.get("api_key")
+            if not key and args.max_requests and sys.stdin.isatty():
+                key = getpass.getpass("OpenRouter API key: ")
+            if not key and args.max_requests:
+                raise ValueError("请设置 OPENROUTER_API_KEY，或用 --local 改用本地模型")
         run(args, key or "")
     except (ValueError, OSError, RuntimeError, PdfReadError, requests.RequestException,
             subprocess.SubprocessError) as error:

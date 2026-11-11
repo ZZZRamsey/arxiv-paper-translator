@@ -8,6 +8,7 @@ import stat
 import tarfile
 import zipfile
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from pathlib import PurePosixPath
 from urllib.parse import unquote, urljoin, urlsplit
 
@@ -84,8 +85,26 @@ def read_download(response, url, identifier):
     }
 
 
+class AbstractMetadata(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.fields = {}
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "meta":
+            fields = dict(attrs)
+            key = fields.get("property")
+            if key in ("og:title", "og:description"):
+                self.fields[key] = " ".join((fields.get("content") or "").split())
+
+
 def lock_version(identifier):
     page, metadata = fetch("abs", identifier)
+    parser = AbstractMetadata()
+    parser.feed(page.decode("utf-8"))
+    parser.close()
+    metadata["title"] = parser.fields.get("og:title", "")
+    metadata["abstract"] = parser.fields.get("og:description", "")
     if re.search(r"v\d+$", identifier):
         return identifier, metadata
     versions = re.findall(rb"<strong>\s*(?:<a\b[^>]*>\s*)?\[v(\d+)\]", page)

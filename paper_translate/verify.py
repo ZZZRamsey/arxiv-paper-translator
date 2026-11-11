@@ -32,9 +32,13 @@ def check_titles(path, original, translated):
 
     verified = {}
     for name, title in (("original", original), ("translated", translated)):
+        if title is None:
+            continue
         if re.search(r"[\\{}$%~^_&#]|--", title):
             verified[name] = "requires-visual-review"
-        elif canonical(title) not in canonical(first):
+        elif (canonical(title) not in canonical(first)
+              # A long title may be hyphenated at a line break ("En-\ngines").
+              and canonical(title) not in canonical(re.sub(r"-[ \t]*\n", "", first))):
             raise ValueError(f"PDF 首页面没有检测到完整的 {name} 标题")
         else:
             verified[name] = "found-on-first-page"

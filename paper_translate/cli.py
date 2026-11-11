@@ -26,7 +26,7 @@ from .translate import (DEFAULT_MODEL, LOCAL_HOST, LOCAL_MODEL, Translator,
 from .verify import check_titles, direct_links, inspect_pdf, render_hashes, verify_bibliography
 from .zotero import attach_pdf as attach_to_zotero
 from .settings import local_settings
-from .ollama import ensure_server
+from .ollama import ensure_server, text_only
 
 COMMENT = re.compile(r"(?<!\\)%[^\n]*")
 INPUT = re.compile(r"\\(?:input|include|subfile)(?![A-Za-z@])\s*(?:\{([^{}]+)\}|([^\s%{}\\]+))")
@@ -231,6 +231,31 @@ def enable_xetex_translation(tex):
     )
 
 
+def repair_model_tex(text, original=""):
+    """Repair common JSON/LaTeX escaping mistakes from a queued translation.
+
+    ChatGPT responses are transported as JSON strings.  A response that writes
+    ``\\textbackslash{}n`` instead of a real newline can turn a list into one
+    invalid LaTeX paragraph.  The appendix overview in this paper is also a
+    navigation-only block, so if it is returned as one quoted string, keep the
+    original structural block and translate the prose around it.
+    """
+    marker = '"\\\\newpage\\\\textbackslash{}n'
+    if marker in text and original:
+        start = text.find(marker)
+        end = text.find('\n\n% 换页', start)
+        orig_start = original.find('\\newpage\n\\appendix')
+        orig_end = original.find('\n\\vspace{1em}\n}', orig_start)
+        if start >= 0 and end > start and orig_start >= 0 and orig_end >= 0:
+            orig_end += len('\n\\vspace{1em}\n}')
+            text = text[:start] + original[orig_start:orig_end] + text[end:]
+    text = text.replace(r'\textbackslash{}n', '\n')
+    text = text.replace(r'\item\textbullet', r'\item[\textbullet]')
+    text = text.replace(r'\addcontentsline{目录}{章节}{附录}',
+                        r'\addcontentsline{toc}{section}{附录}')
+    return text
+
+
 def patch_pdftex_styles(root):
     """Disable a PDFLaTeX guard in the private Unicode build copy."""
     changed = []
@@ -279,6 +304,8 @@ def run(args, key):
         ensure_server(args.local, args.jobs)
     translator = Translator(key, args.model, output / ".translation-cache", args.max_requests,
                             local=args.local, chatgpt=args.chatgpt)
+    if args.local and args.max_requests:
+        translator.serve_model = text_only(args.local, args.model)
     print("正在根据标题和摘要提取论文简称", flush=True)
     short_name = translator.short_name(lookup["title"], lookup["abstract"])
     translator.review = bool(args.local and not args.no_review)
@@ -346,6 +373,7 @@ def run(args, key):
     original_title = documents[root][0][slice(*original_title_bounds)].strip()
     translated_title = translations[root][slice(*translated_title_bounds)].strip()
     for path, content in translations.items():
+        content = repair_model_tex(content, documents[path][0])
         if path == root:
             if not args.original_layout:
                 content = bilingual_title(documents[path][0], content)

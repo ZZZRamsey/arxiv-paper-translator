@@ -21,8 +21,10 @@ ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 # route) lets each request set the context window and disable thinking.
 LOCAL_MODEL = "qwen3.5:9b"
 LOCAL_HOST = "http://127.0.0.1:11434"
-# Ollama allocates this window once per parallel slot (OLLAMA_NUM_PARALLEL).
-LOCAL_CONTEXT = 8192
+# Ollama allocates this window once per parallel slot (OLLAMA_NUM_PARALLEL), so it
+# is kept small; LOCAL_WHOLE is the longest paragraph that still fits with its review.
+LOCAL_CONTEXT = 4096
+LOCAL_WHOLE = 3000
 LOCAL_PROMPT = """You are a professional translator of machine-learning papers. Translate the
 LaTeX prose into fluent, precise Simplified Chinese (zh-CN), as a Chinese researcher would write it.
 Rules:
@@ -164,6 +166,12 @@ def prose_parts(tex, root=False, table=False):
             yield prefix[right - 1:], False
         else:
             yield prefix, False
+            title = ICML_TITLE.search(tex)
+            if title:
+                left, right = title.span("title")
+                yield tex[:left + 1], False
+                yield tex[left + 1:right - 1], True
+                tex = tex[right - 1:]
         end = re.search(r"(?m)^[ \t]*\\end\{document\}", tex)
         suffix = tex[end.start():] if end else ""
         tex = tex[:end.start()] if end else tex
@@ -291,15 +299,26 @@ def faithful(masked, result):
         raise ValueError(f"译文新增了 TeX 特殊字符 {''.join(added)}")
 
 
-def restore(result, saved, masked=None):
+def restore(result, saved, masked=None, pairs=None):
     # Small models often lose one bracket where placeholders touch ([[[T3]][[[T4]]]).
     result = DAMAGED_TOKEN.sub(lambda match: f"[[[T{match[1] or match[2]}]]]", result)
     order = [int(token[4:-3]) for token in TOKEN.findall(result)]
     if sorted(order) != list(range(len(saved))) or not re.search(r"\p{Han}", result):
         raise ValueError("译文缺少中文或 LaTeX 占位符有变动")
     # Chinese word order may move a formula or citation; grouping syntax must not move.
-    fixed = [index for index in order if not movable(saved[index])]
-    if fixed != sorted(fixed):
+    # With merged placeholders (`pairs`), a whole \textbf{...} group may move as one
+    # unit too, as long as groups stay properly nested.
+    closers = set((pairs or {}).values())
+    fixed = [index for index in order
+             if not movable(saved[index]) and index not in (pairs or {}) and index not in closers]
+    opened, nested = [], True
+    for index in order:
+        if index in (pairs or {}):
+            opened.append(index)
+        elif index in closers and (not opened or pairs[opened.pop()] != index):
+            nested = False
+            break
+    if fixed != sorted(fixed) or opened or not nested:
         raise ValueError("译文改变了 LaTeX 结构占位符的顺序")
     if result.startswith(("\x60\x60\x60", "**")):
         raise ValueError("模型返回了 Markdown 包装")
@@ -381,6 +400,7 @@ class Translator:
             chatgpt.mkdir(mode=0o700, parents=True, exist_ok=True)
             self.provider = "ChatGPT"
         self.is_local = bool(local)
+        self.serve_model = model
         self.review = False
         self.title = ""
         self.glossary = dict(BASE_GLOSSARY)
@@ -471,9 +491,9 @@ class Translator:
             # Generation on a laptop is slow, and requests queue behind each other.
             response = self.local.session.post(
                 self.endpoint, json={
-                    "model": self.model, "messages": messages, "stream": False,
+                    "model": self.serve_model, "messages": messages, "stream": False,
                     "think": False, "keep_alive": "30m",
-                    "options": {"temperature": 0.1, "num_predict": 4096,
+                    "options": {"temperature": 0.1, "num_predict": 2048,
                                 "num_ctx": LOCAL_CONTEXT},
                 }, timeout=(5, 1800), allow_redirects=False,
             )
@@ -574,7 +594,8 @@ class Translator:
         # Readable masking first; if the model keeps damaging it, fall back to the
         # strict masking (numbers protected), then to span-by-span translation.
         feedback = ""
-        for attempt in range(6):
+        # A paragraph too long for one context window goes sentence by sentence at once.
+        for attempt in range(3 if len(source) > LOCAL_WHOLE else 0, 6):
             result = None
             try:
                 masked, saved = local_mask(source) if attempt < 4 else mask(source)
@@ -586,9 +607,9 @@ class Translator:
                     result = self.translate_sentences(masked, system, pairs)
                 else:
                     result = self.translate_spans(masked, individual=attempt == 5)
-                restored = restore(result, saved, masked)
+                restored = restore(result, saved, masked, pairs if attempt < 4 else None)
                 faithful(masked, result)
-                if self.review and attempt < 4:  # span output has no draft worth polishing
+                if self.review and attempt < 3:  # only a whole-paragraph draft fits a review
                     restored = self.reviewed(masked, saved, result) or restored
                 self.save(path, restored)
                 return self.with_spacing(text, restored)
@@ -630,7 +651,7 @@ class Translator:
             result = from_tags(self.complete(
                 f"SOURCE:\n{as_tags(masked, pairs)}\n\nDRAFT:\n{as_tags(draft, pairs)}",
                 system=REVIEW_PROMPT + self.local_prompt(masked)[len(LOCAL_PROMPT):]), pairs)
-            restored = restore(result, saved, masked)
+            restored = restore(result, saved, masked, pairs)
             faithful(masked, result)
         except (requests.RequestException, OSError, ValueError):
             return None

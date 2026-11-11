@@ -11,8 +11,8 @@ from unittest.mock import call, patch
 from paper_translate.cli import enable_xetex_translation, main, output_paths, patch_pdftex_styles
 from paper_translate.sandbox import detect_engine
 from paper_translate.source import check_download_url, extract, lock_version, normalize
-from paper_translate.ollama import ensure_server
-from paper_translate.translate import faithful, local_mask, Translator, bilingual_title, mask, plan, restore
+from paper_translate.ollama import FIXED, ensure_server
+from paper_translate.translate import tag_pairs, faithful, local_mask, Translator, bilingual_title, mask, plan, restore
 from paper_translate.verify import publish
 
 
@@ -230,7 +230,7 @@ class TranslationTests(unittest.TestCase):
                 complete.assert_not_called()
 
     def test_ollama_restarts_only_when_settings_are_missing(self):
-        good = {"OLLAMA_NUM_PARALLEL": "4", "LLAMA_ARG_CACHE_RAM": "0", "LLAMA_ARG_CTX_CHECKPOINTS": "2"}
+        good = {"OLLAMA_NUM_PARALLEL": "4", **FIXED}
         with patch("paper_translate.ollama.sys.platform", "darwin"), \
                 patch("paper_translate.ollama.subprocess.run") as run, \
                 patch("paper_translate.ollama.time.sleep"), \
@@ -244,6 +244,19 @@ class TranslationTests(unittest.TestCase):
             self.assertIn(call(["launchctl", "setenv", "OLLAMA_NUM_PARALLEL", "4"], check=False),
                           run.call_args_list)
             get.assert_called()
+
+    def test_whole_formatted_group_may_move_but_must_stay_nested(self):
+        masked, saved = local_mask(r"\item We show \textbf{gains of 41\%} in setups (\textit{e.g.}, same data).")
+        pairs = tag_pairs(saved)
+        self.assertEqual(saved, ["\\item", "\\textbf{", "\\%}", "\\textit{", "}"])
+        self.assertEqual(pairs, {1: 2, 3: 4})
+        moved = "[[[T0]]] 在相同设置（[[[T3]]]e.g.[[[T4]]]，相同数据）下，我们展示了[[[T1]]]提升 41[[[T2]]]。"
+        self.assertEqual(restore(moved, saved, masked, pairs),
+                         r"\item 在相同设置（\textit{e.g.}，相同数据）下，我们展示了\textbf{提升 41\%}。")
+        with self.assertRaises(ValueError):
+            restore(moved, saved, masked)
+        with self.assertRaises(ValueError):
+            restore("[[[T0]]] 我们展示了[[[T1]]]提升 41（[[[T3]]]e.g.[[[T2]]][[[T4]]]）。", saved, masked, pairs)
 
     def test_local_backend_calls_ollama_without_key(self):
         with tempfile.TemporaryDirectory() as temp:

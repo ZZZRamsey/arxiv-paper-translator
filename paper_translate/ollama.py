@@ -13,7 +13,9 @@ import requests
 PARALLEL = "OLLAMA_NUM_PARALLEL"
 # Without these, the runner's prompt cache grows until a 16 GB Mac swaps and
 # generation slows several-fold.
-FIXED = {"LLAMA_ARG_CACHE_RAM": "0", "LLAMA_ARG_CTX_CHECKPOINTS": "2"}
+# An 8-bit attention cache (which needs flash attention) trims the per-slot memory.
+FIXED = {"LLAMA_ARG_CACHE_RAM": "0", "LLAMA_ARG_CTX_CHECKPOINTS": "2",
+         "OLLAMA_KV_CACHE_TYPE": "q8_0", "OLLAMA_FLASH_ATTENTION": "1"}
 APPS = (Path("/Applications/Ollama.app"), Path.home() / "Applications/Ollama.app")
 
 
@@ -38,9 +40,41 @@ def suitable(settings, jobs):
     return parallel >= jobs and all(settings.get(name) == value for name, value in FIXED.items())
 
 
+def local_host(url):
+    return sys.platform == "darwin" and urlparse(url).hostname in ("127.0.0.1", "localhost", "::1")
+
+
+def text_only(url, model):
+    """A copy of a vision model without its image encoder (about 1 GB less memory).
+
+    Translation never sends images. The copy shares the weight file on disk.
+    """
+    if not local_host(url):
+        return model
+    lines = output("ollama", "show", "--modelfile", model).splitlines()
+    weights = [line for line in lines if line.startswith("FROM /")]
+    if len(weights) < 2:
+        return model
+    name = model + "-text" if ":" in model else model + ":text"
+    if name not in output("ollama", "list").split():
+        keep = []
+        for line in lines:
+            if line.startswith("LICENSE"):
+                break
+            if line.startswith(("TEMPLATE", "RENDERER", "PARSER", "PARAMETER", "SYSTEM")):
+                keep.append(line)
+        created = subprocess.run(["ollama", "create", name, "-f", "/dev/stdin"],
+                                 input="\n".join([weights[0], *keep]) + "\n",
+                                 capture_output=True, text=True, check=False)
+        if created.returncode:
+            return model
+        print(f"已创建不含视觉模块的翻译用模型 {name}", flush=True)
+    return name
+
+
 def ensure_server(url, jobs):
     """Restart Ollama with the needed settings unless it already runs with them."""
-    if sys.platform != "darwin" or urlparse(url).hostname not in ("127.0.0.1", "localhost", "::1"):
+    if not local_host(url):
         return
     wanted = {PARALLEL: str(jobs), **FIXED}
     running = server_settings()

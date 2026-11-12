@@ -163,6 +163,21 @@ details[open] > summary::before { transform: rotate(90deg); }
 .actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .log { margin: 0; max-height: 220px; overflow: auto; background: var(--sunken); border-radius: 8px; padding: 10px 12px; font: 12px/1.65 var(--mono); color: var(--muted); white-space: pre-wrap; word-break: break-all; }
 
+/* setup panel */
+.setup-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 18px; }
+.setup-head b { font-size: 15px; }
+.setup-head p { margin: 2px 0 0; color: var(--muted); font-size: 12.5px; }
+.check { display: grid; grid-template-columns: 64px minmax(0, 1fr) auto; gap: 4px 14px; align-items: start; padding: 12px 18px; border-top: 1px solid var(--line); }
+.check .pill { justify-self: start; margin-top: 1px; }
+.check b { font-weight: 500; }
+.check p { margin: 2px 0 0; color: var(--muted); font-size: 12.5px; }
+.check .extra { grid-column: 2 / -1; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 4px; }
+.check .extra input, .check .extra select { flex: 1; min-width: 160px; width: auto; }
+.check code { font: 12px var(--mono); background: var(--sunken); padding: 2px 6px; border-radius: 4px; user-select: all; word-break: break-all; }
+.link { border: 0; background: none; color: var(--accent); cursor: pointer; padding: 0; font-size: 13px; }
+.link:hover { text-decoration: underline; }
+@media (max-width: 560px) { .check { grid-template-columns: 1fr; } .check .extra { grid-column: 1; } }
+
 .recent { list-style: none; margin: 0; padding: 0; }
 .recent li { display: flex; align-items: center; gap: 12px; padding: 10px 18px; border-top: 1px solid var(--line); }
 .recent li:first-child { border-top: 0; }
@@ -188,8 +203,16 @@ details[open] > summary::before { transform: rotate(90deg); }
 <main>
   <header>
     <h1>arXiv 论文翻译<small>LaTeX 源码 → 中文 PDF</small></h1>
-    <span id="tools" class="hint"></span>
+    <span class="hint" style="margin:0"><span id="tools" style="display:contents"></span><button type="button" class="link" id="setup-open">环境与默认设置</button></span>
   </header>
+
+  <section id="setup" class="sheet" hidden>
+    <div class="setup-head">
+      <div><b id="setup-title">开始前的准备</b><p id="setup-sub">下面几项决定翻译能否顺利完成，带“需要处理”的请先处理。</p></div>
+      <button type="button" class="btn primary" id="setup-done">完成</button>
+    </div>
+    <div id="checks"></div>
+  </section>
 
   <form id="form" class="section" autocomplete="off">
     <div class="paper">
@@ -270,6 +293,7 @@ details[open] > summary::before { transform: rotate(90deg); }
       <label class="toggle"><span><b>保存 LaTeX 源码</b><small>额外输出可独立重建的源码 ZIP</small></span><input type="checkbox" id="save_source"></label>
       <label class="toggle"><span><b>沿用原文排版</b><small>保留模板自身的标题、行号和引用样式；关闭时首页为中英双语标题并生成双向引用导航</small></span><input type="checkbox" id="original_layout"></label>
       <label class="toggle"><span><b>使用本机 TeX Live 编译</b><small id="texlive-note">PDFLaTeX 编译英文基线，XeLaTeX 编译中文；关闭时使用 Tectonic</small></span><input type="checkbox" id="texlive"></label>
+      <label class="toggle"><span><b>自动下载缺失的 TeX 宏包</b><small>Tectonic 离线编译缺少宏包时，联网从 Tectonic 宏包库下载后重试；论文源码本身始终在断网的隔离环境中编译</small></span><input type="checkbox" id="fetch_packages" checked></label>
       <label class="toggle" id="row-review"><span><b>逐段复核</b><small>本地模型每段译完再检查一遍；关闭后耗时约减半，误译略多</small></span><input type="checkbox" id="review" checked></label>
       <label class="toggle"><span><b>保存到 Zotero</b><small>完成后按 arXiv 编号匹配本机 Zotero 条目并挂为子附件</small></span><input type="checkbox" id="zotero"></label>
       <label class="toggle" id="row-zotero-replace"><span><b>覆盖 Zotero 旧译本</b><small>条目下已有中文译本时，挂上新译文并把旧附件移入 Zotero 废纸篓；关闭时只提醒、不重复挂载</small></span><input type="checkbox" id="zotero_replace"></label>
@@ -281,8 +305,8 @@ details[open] > summary::before { transform: rotate(90deg); }
         </div>
         <div class="row">
           <label for="max_requests">请求上限</label>
-          <input id="max_requests" type="number" min="0" step="1" value="500">
-          <p class="note">本次模型请求总数，含重试。填 0 时只复用译文缓存。</p>
+          <input id="max_requests" type="number" min="0" step="1" placeholder="自动：云端 500，本地 5000">
+          <p class="note">本次模型请求总数，含重试。留空按引擎自动选择；填 0 时只复用译文缓存。</p>
         </div>
         <div class="row">
           <label for="font">中文字体</label>
@@ -316,7 +340,7 @@ const TOKEN = "__TOKEN__";
 const $ = id => document.getElementById(id);
 const ID = /^(?:\d{4}\.\d{4,5}|[a-zA-Z][a-zA-Z0-9.-]*\/\d{7})(?:v[1-9]\d*)?$/;
 const TEXT = ["model", "queue", "output", "max_requests", "font", "root", "tex_overlay"];
-const FLAGS = ["save_source", "original_layout", "texlive", "review", "zotero", "zotero_replace", "strict"];
+const FLAGS = ["save_source", "original_layout", "texlive", "fetch_packages", "review", "zotero", "zotero_replace", "strict"];
 const STAGES = [/^正在解析 arXiv/, /^正在下载同版本/, /^英文基线编译/, /^翻译 \d+ 个文本块/, /^中文编译/, /^(?:中文 PDF 已编译|从独立目录重建)/, /^PDF 已保存/];
 let manual = false, active = 0, detecting = null, lastDetect = 0;
 let config = null, models = {}, timer = null, cursor = 0, stage = -1, running = false, dismissed = false;
@@ -368,9 +392,9 @@ function commandLine(form) {
   if (form.engine === "chatgpt") parts.push("--chatgpt", form.queue || "<目录>");
   if (form.model && form.engine !== "chatgpt" && config && form.model !== config.models[form.engine]) parts.push("--model", form.model);
   if (form.zotero_replace) form.zotero = false;
-  for (const flag of ["original_layout", "texlive", "save_source", "zotero", "zotero_replace", "strict"]) if (form[flag]) parts.push("--" + flag.replace("_", "-"));
+  for (const flag of ["original_layout", "texlive", "save_source", "zotero", "zotero_replace", "strict", "fetch_packages"]) if (form[flag]) parts.push("--" + flag.replaceAll("_", "-"));
   if (form.jobs !== 4) parts.push("--jobs", String(form.jobs));
-  if (form.max_requests !== null && form.max_requests !== 500) parts.push("--max-requests", String(form.max_requests));
+  if (form.max_requests !== null) parts.push("--max-requests", String(form.max_requests));
   if (form.font && form.font !== "Songti SC") parts.push("--font", form.font);
   if (form.root) parts.push("--root", form.root);
   if (form.tex_overlay) parts.push("--tex-overlay", form.tex_overlay);
@@ -381,8 +405,9 @@ function save() {
   for (const id of TEXT) if (id !== "model") state[id] = $(id).value;
   state.jobs = $("jobs").value;
   for (const flag of FLAGS) state[flag] = $(flag).checked;
-  state.advanced = $("advanced").open;
+  state.advanced = $("advanced").open; state.setup_seen = setupSeen;
   try { localStorage.setItem("arxiv-translate-ui", JSON.stringify(state)); } catch {}
+  clearTimeout(save.timer); save.timer = setTimeout(() => api("/api/ui-state", state).catch(() => {}), 400);
 }
 function refresh() {
   const kind = engine(), paper = parsePaper($("paper").value), hint = $("hint");
@@ -420,7 +445,7 @@ function refresh() {
     renderPicker(found); renderTip(kind);
     $("model-list").replaceChildren(...(kind === "local" ? [] : [config.models.openrouter, "deepseek/deepseek-chat"])
       .filter((name, index, all) => all.indexOf(name) === index).map(name => new Option(name)));
-    $("key-note").textContent = config.has_key ? "已从环境变量或本机配置读取 key，留空即可。此处填写的 key 只用于本次任务，不会保存。" : "只用于本次任务，不会保存到磁盘或浏览器。";
+    $("key-note").textContent = config.has_key ? "已从环境变量或本机配置读取 key，留空即可。此处填写的 key 只用于本次任务，不会保存。" : "此处填写的 key 只用于本次任务；想长期保存，请在右上角“环境与默认设置”里填写。";
     $("api-key").placeholder = config.has_key ? "已配置，留空使用" : "sk-or-…";
   }
   $("command").textContent = commandLine(collect());
@@ -525,6 +550,71 @@ function switchEngine() {
   manual = false; refresh(); save();
   if (kind === "local") detect(false);
 }
+
+/* setup panel */
+let taskTimer = null, setupSeen = false;
+const needsSetup = () => { const env = config.environment;
+  return !(env.tectonic || env.texlive) || !env.pdftoppm || (!config.has_key && !installed().length); };
+function renderSetup() {
+  const env = config.environment, box = $("checks"); box.replaceChildren();
+  const copyable = text => { const c = node("code", "", text); c.title = "点击复制"; c.style.cursor = "copy";
+    c.onclick = async () => { try { await navigator.clipboard.writeText(text); toast("已复制：" + text); } catch { toast("复制失败，请手动选择"); } }; return c; };
+  const check = (state, title, detail, ...extra) => {
+    const labels = { ok: ["就绪", "good"], todo: ["需要处理", "bad"], optional: ["可选", ""], busy: ["进行中", "live"] };
+    const row = node("div", "check"), body = node("div");
+    row.append(node("span", "pill " + labels[state][1], labels[state][0]));
+    body.append(node("b", "", title), node("p", "", detail)); row.append(body, node("span"));
+    const parts = extra.filter(Boolean);
+    if (parts.length) { const line = node("div", "extra"); line.append(...parts); row.append(line); }
+    box.append(row); return row;
+  };
+  const button = (label, action, primary) => { const b = node("button", "btn" + (primary ? " primary" : ""), label); b.type = "button"; b.onclick = () => action(b); return b; };
+  const task = config.task && config.task.name === "tex" ? config.task : null;
+  if (task && task.status === "running") check("busy", "TeX 编译环境", task.lines[task.lines.length - 1] || "正在下载 TeX 基础宏包…");
+  else if (env.tectonic && env.tex_cache) check("ok", "TeX 编译环境", (env.app ? "使用 app 内置的 Tectonic" : "已找到 Tectonic") + "，基础宏包已下载。");
+  else if (env.tectonic) check("optional", "TeX 编译环境", (task && task.status === "failed" ? task.lines[task.lines.length - 1] + " " : "") + "Tectonic 已就绪，还需要联网下载一次 TeX 基础宏包（约 60 MB，通常 5–15 分钟，取决于网络）。也可以直接开始翻译，首次编译时会自动下载。",
+    button("现在下载", async b => { b.disabled = true; try { config.task = await api("/api/task", { name: "tex" }); renderSetup(); pollTask(); } catch (error) { toast(error.message); b.disabled = false; } }, true));
+  else if (env.texlive) check("ok", "TeX 编译环境", "未找到 Tectonic，将使用本机 TeX Live 编译（请打开“使用本机 TeX Live 编译”）。");
+  else check("todo", "TeX 编译环境", "没有找到 Tectonic 或 TeX Live。在终端运行下面的命令安装，然后点“重新检查”：", copyable("brew install tectonic"));
+  check(env.texlive ? "ok" : "optional", "TeX Live（PDFLaTeX / XeLaTeX）", env.texlive ? "已安装。只支持 PDFLaTeX 的论文模板会自动改用它编译。"
+    : "少数论文模板只支持 PDFLaTeX，遇到时需要它。体积较大（约 5 GB），可以等遇到再装：", env.texlive ? null : copyable("brew install --cask mactex-no-gui"));
+  if (env.pdftoppm) check("ok", "PDF 渲染（Poppler）", env.app ? "使用 app 内置的 pdftoppm。" : "已找到 pdftoppm。");
+  else check("todo", "PDF 渲染（Poppler）", "核验译文 PDF 需要 pdftoppm：", copyable("brew install poppler"));
+  if (!env.font) check("todo", "中文字体", "没有找到系统自带的宋体（Songti SC）。请在“高级选项 → 中文字体”里换成本机已安装的中文字体。");
+  const key = node("input"); key.type = "password"; key.placeholder = config.has_key ? "已保存，填写新 key 可替换" : "sk-or-…"; key.autocomplete = "off"; key.setAttribute("aria-label", "OpenRouter API key");
+  check(config.has_key ? "ok" : installed().length ? "optional" : "todo", "云端引擎 · OpenRouter",
+    config.has_key ? "API key 已配置。翻译时待译文本会发送到 OpenRouter。" : "在 openrouter.ai/keys 创建 API key 后填在这里。key 保存在本机配置文件（仅本人可读），不会上传到别处。",
+    key, button("保存 key", async () => { if (!key.value.trim()) return toast("请先填写 API key");
+      try { config = await api("/api/settings", { api_key: key.value }); key.value = ""; toast("API key 已保存"); renderSetup(); refresh(); } catch (error) { toast(error.message); } }));
+  const found = installed();
+  check(found.length ? "ok" : config.has_key ? "optional" : "todo", "本地引擎 · Ollama",
+    found.length ? `Ollama 正在运行，已安装 ${found.length} 个模型。待译文本不会离开本机。`
+      : config.ollama.models ? "Ollama 正在运行，但还没有模型。在终端下载一个（约 6 GB，建议 16 GB 以上内存）："
+      : env.ollama_installed ? "已安装 Ollama 但没有运行。打开 Ollama 后点“重新检查”。" : "不想把论文发到云端时使用。先安装 Ollama，再下载模型：",
+    found.length || env.ollama_installed ? null : copyable("brew install --cask ollama-app"),
+    found.length ? null : copyable("ollama pull qwen3.5:9b"));
+  const select = node("select"); select.setAttribute("aria-label", "默认翻译引擎");
+  select.append(new Option("默认用 OpenRouter（云端）", "openrouter"), new Option("默认用 Ollama（本机）", "local")); select.value = config.engine;
+  const out = node("input", "path"); out.type = "text"; out.value = config.output; out.setAttribute("aria-label", "默认保存位置");
+  check("ok", "默认设置", "新窗口打开时使用的翻译引擎和译文保存位置。", select, out,
+    button("选择…", async () => { try { const { path } = await api("/api/pick-folder", { current: out.value.trim() }); if (path) out.value = path; } catch (error) { toast(error.message); } }),
+    button("保存默认设置", async () => { try { config = await api("/api/settings", { engine: select.value, output: out.value });
+      $("output").value = config.output; $("engine-" + config.engine).checked = true; switchEngine(); loadRecent(); toast("默认设置已保存"); renderSetup(); } catch (error) { toast(error.message); } }));
+  check(env.zotero_installed ? "ok" : "optional", "Zotero（可选）", env.zotero_installed ? "已安装。打开“保存到 Zotero”后，译文会自动挂到对应论文条目下；首次使用需在 Zotero 设置 → 高级中允许其他应用通信。" : "安装 Zotero 后可以把译文自动挂到对应论文条目下。");
+  const again = node("div", "check"); again.append(node("span"), button("重新检查", async b => { b.disabled = true; try { config = await api("/api/config"); renderSetup(); refresh(); toast("已重新检查"); } catch (error) { toast(error.message); b.disabled = false; } }));
+  again.lastChild.style.justifySelf = "start"; box.append(again);
+  const pending = needsSetup();
+  $("setup-title").textContent = pending ? "开始前的准备" : "环境与默认设置";
+  $("setup-sub").textContent = pending ? "下面几项决定翻译能否顺利完成，带“需要处理”的请先处理。" : "一切就绪，可以开始翻译。";
+}
+async function pollTask() {
+  clearTimeout(taskTimer);
+  try { config.task = await api("/api/task"); } catch { taskTimer = setTimeout(pollTask, 2000); return; }
+  if (config.task.status === "running") { renderSetup(); taskTimer = setTimeout(pollTask, 1000); return; }
+  try { config = await api("/api/config"); } catch {}
+  renderSetup(); refresh();
+}
+function showSetup(show) { $("setup").hidden = !show; if (show) renderSetup(); }
 
 /* run panel */
 function minutes(seconds) { return Math.floor(seconds / 60) + ":" + String(seconds % 60).padStart(2, "0"); }
@@ -664,15 +754,19 @@ $("model").addEventListener("input", () => { if (engine() !== "chatgpt") models[
 document.addEventListener("input", () => { refresh(); save(); });
 $("output").addEventListener("change", loadRecent);
 $("advanced").addEventListener("toggle", save);
+$("setup-open").onclick = () => { showSetup($("setup").hidden); if (!$("setup").hidden) $("setup").scrollIntoView({ behavior: "smooth", block: "start" }); };
+$("setup-done").onclick = () => { setupSeen = true; save(); showSetup(false); };
 
 (async function boot() {
   try { config = await api("/api/config"); }
   catch (error) { toast("无法连接本机服务：" + error.message); return; }
-  let saved = {};
-  try { saved = JSON.parse(localStorage.getItem("arxiv-translate-ui") || "{}"); } catch {}
+  let saved = config.ui_state || {};
+  if (!Object.keys(saved).length) try { saved = JSON.parse(localStorage.getItem("arxiv-translate-ui") || "{}"); } catch {}
+  setupSeen = !!saved.setup_seen;
   models = Object.assign({}, config.models, saved.models);
   $("output").value = config.output; $("queue").value = config.queue;
   for (const id of TEXT) if (id !== "model" && saved[id] !== undefined && saved[id] !== "") $(id).value = saved[id];
+  if (saved.max_requests === "500") $("max_requests").value = "";
   if (saved.jobs) $("jobs").value = saved.jobs;
   for (const flag of FLAGS) if (typeof saved[flag] === "boolean") $(flag).checked = saved[flag];
   $("advanced").open = !!saved.advanced;
@@ -686,6 +780,8 @@ $("advanced").addEventListener("toggle", save);
   $("tools").innerHTML = ""; for (const text of tools) { const pill = document.createElement("span"); pill.className = "pill bad"; pill.textContent = text; $("tools").append(pill); }
   if (!config.tools.texlive) { $("texlive").checked = false; $("texlive").disabled = true; $("texlive-note").textContent = "本机未找到 pdflatex 和 xelatex"; }
   refresh(); loadRecent(); poll();
+  showSetup(!setupSeen || needsSetup());
+  if (config.task && config.task.status === "running") pollTask();
 })();
 </script>
 </body>

@@ -107,12 +107,18 @@ MASK = re.compile(
     r"\\(?:icmlkeywords|raisebox|parbox)\s*" + GROUP + r"|" +
     r"\\(?:vskip|hskip)\s*[-+]?[0-9.]+(?:pt|mm|cm|in|em|ex)\b|" +
     IDENTIFIER + r"|" +
+    # Settings, not prose: \captionsetup{type=figure}, \definecolor{name}{rgb}{0,1,0}, ...
+    r"\\definecolor\s*" + GROUP + r"\s*" + GROUP + r"\s*" + GROUP + r"|" +
+    r"\\(?:setlength|addtolength)\s*\\[A-Za-z@]+\s*" + GROUP + r"|" +
+    r"(?<![\p{L}\d])[-+]?\d*\.?\d+(?:pt|em|ex|cm|mm|bp|sp|pc|mu)\b|" +
+    r"\\(?:captionsetup|hypersetup|lstset|tikzset|pgfplotsset|usetikzlibrary|colorlet|graphicspath|"
+    r"newcolumntype|setlist|sisetup|setlength|addtolength|addtocounter|fontsize)\*?(?:[ \t]*\[[^\]\n]*\])*[ \t]*" + GROUP + r"(?:[ \t]*" + GROUP + r")?|" +
  r"(?<!\\)%[^\n]*|"
     r"(?<!\\)\$\$(?:\\.|[^$])*?\$\$|(?<!\\)\$(?:\\.|[^$])*?\$|"
     r"\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|"
     r"\\(?:[A-Za-z]*cite[A-Za-z]*|[A-Za-z]*ref|label|url|path|input|include|"
     r"includegraphics|bibliography|bibliographystyle|begin|end|vspace|hspace|"
-    r"setlength|addtolength|cline|cmidrule|num|texttt|color|textcolor|colorbox|twemoji|captionof)\*?"
+    r"cline|cmidrule|num|texttt|color|textcolor|colorbox|twemoji|captionof)\*?"
     r"(?:[ \t]*\[[^\]\n]*\])*[ \t]*" + GROUP + r"(?:\[[^\]\n]*\])?|"
     r"\\href\s*" + GROUP + r"|"
     r"\\subfigure\*?(?:\[[^\]\n]*\]){1,2}|"

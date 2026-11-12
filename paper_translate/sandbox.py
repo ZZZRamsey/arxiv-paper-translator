@@ -7,14 +7,21 @@ import shutil
 import sys
 from pathlib import Path
 
+from .runtime import tools_root
+
 
 def find_executable(name):
     candidates = []
+    tools = tools_root()
+    if tools:
+        candidates.append(tools / "bin" / name)  # the copy shipped inside the app
     found = shutil.which(name)
     if found:
         candidates.append(Path(found))
     candidates.extend([
         Path(sys.executable).parent / name,
+        Path("/opt/homebrew/bin") / name,  # a Finder-launched app has no Homebrew PATH
+        Path("/usr/local/bin") / name,
         Path("/Library/TeX/texbin") / name,
         Path("/usr/local/texlive/bin/universal-darwin") / name,
     ])
@@ -66,6 +73,8 @@ def command_for(source, output, engine_args, engine=None):
              Path("/usr/local/Cellar"), Path("/opt/homebrew/opt"),
              Path("/usr/local/opt")]
     # A relocatable TeX Live tree may live outside the standard installation paths.
+    if tools_root():
+        reads.append(tools_root())
     tex_root = executable.resolve().parent.parent.parent
     if (tex_root / "texmf-dist").is_dir():
         reads.append(tex_root)

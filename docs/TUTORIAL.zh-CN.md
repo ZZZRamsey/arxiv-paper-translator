@@ -211,7 +211,7 @@ output/.translation-cache/<缓存文件>.txt
 | `--texlive` | 使用 PDFLaTeX、XeLaTeX 和 BibTeX |
 | `--no-review` | 本地模型跳过译文复核 |
 | `--jobs N` | 设置并发翻译数量，默认 4 |
-| `--max-requests N` | 设置模型请求上限，默认 500 |
+| `--max-requests N` | 设置模型请求上限，默认云端 500、本地和 ChatGPT 会话 5000 |
 | `--font NAME` | 指定中文字体，默认 `Songti SC` |
 | `--root FILE` | 指定源码包中的根 TeX 文件 |
 | `--tex-overlay DIR` | 添加本地 TeX 宏包目录 |

@@ -26,6 +26,8 @@ from .translate import (DEFAULT_MODEL, LOCAL_HOST, LOCAL_MODEL, Translator,
 from .verify import check_titles, direct_links, inspect_pdf, render_hashes, verify_bibliography
 from .zotero import ZoteroDuplicate, attach_pdf as attach_to_zotero
 from .settings import local_settings
+from .runtime import default_output
+from . import texcache
 from .ollama import ensure_server, text_only
 
 COMMENT = re.compile(r"(?<!\\)%[^\n]*")
@@ -92,7 +94,31 @@ def input_tree(root, source):
     return documents
 
 
+FETCH_PACKAGES = False
+
+
 def build(root, target, log, source=None, engine=None):
+    """Compile offline; with --fetch-packages, download TeX files the run could not find."""
+    asked = set()
+    while True:
+        online = FETCH_PACKAGES and (engine or detect_engine(source or root.parent, root)) == "tectonic"
+        if online and not texcache.CACHE.is_dir():
+            texcache.warm()
+        try:
+            return build_once(root, target, log, source, engine)
+        except ValueError:
+            if not online:
+                raise
+            output = "\n".join(path.read_text(encoding="utf-8", errors="replace")
+                               for path in [log, *target.glob("*.log")] if path.is_file())
+            names = [name for name in texcache.missing_files(output) if name not in asked]
+            if not names or len(asked) > 40:
+                raise
+            asked.update(names)
+            texcache.fetch(names)
+
+
+def build_once(root, target, log, source=None, engine=None):
     target.mkdir(exist_ok=True, parents=True)
     source = source or root.parent
     engine = engine or detect_engine(source, root)
@@ -175,18 +201,20 @@ def add_local_dependencies(directory, root):
     return {relative.as_posix(): digest(source.read_bytes()) for source, relative in files}
 
 
-def configure_chinese(tex, font, preserve_layout=False):
-    if not re.fullmatch(r"[\w .-]+", font):
-        raise ValueError("无效的中文字体名称")
-    if not preserve_layout:
-        tex = re.sub(r"(?m)^([ \t]*)\\linenumbers\b(?:\[[^\]\n]*\])?", r"\1", tex)
-    if re.search(r"\\usepackage(?:\[[^\]]*\])?\{xeCJK\}", COMMENT.sub("", tex)):
-        package = ""
-    else:
-        package = "\\usepackage{xeCJK}\n"
-    # xeCJK provides Unicode text directly. Preserve legacy CJK group scopes.
-    tex = re.sub(r"(?m)^[ \t]*\\usepackage\{CJKutf8\}", lambda _:
-                 r"\newenvironment{CJK}[2]{}{}" + "\n" + r"\newenvironment{CJK*}[2]{}{}", tex)
+def xetex_compatible(tex):
+    """Neutralize pdfTeX idioms of arXiv templates so XeTeX (Tectonic) can run them."""
+    # px is a pdfTeX-only unit (\pdfpxdimen, 1bp by default): width=360px.
+    tex = re.sub(r"(?<=[=,{\s])(\d*\.?\d+)px\b", r"\1bp", tex)
+    # \pdfoutput=1 is an arXiv convention; under XeTeX it makes pgf pick the pdfTeX driver.
+    tex = re.sub(r"(?m)^([ \t]*)\\pdfoutput[ \t]*=[ \t]*1\b", r"\1% \\pdfoutput=1", tex)
+    # An explicit pdftex/dvips driver option does the same for graphicx, color and hyperref.
+    def drop_driver(match):
+        options = [option for option in match[2].split(",")
+                   if option.strip() not in ("pdftex", "dvips", "dvipdfm")]
+        return match[1] + ",".join(options) + match[3]
+    tex = re.sub(r"(\\(?:usepackage|documentclass)\s*\[)([^\]]*)"
+                 r"(\]\s*\{(?:graphicx|graphics|color|xcolor|hyperref|geometry|pgf|tikz|article)\})",
+                 drop_driver, tex)
     # axessibility's accsupp driver also sets pdfTeX-only output parameters.
     # XeTeX writes Unicode mappings through xdvipdfmx. Keep the math tagging
     # macros and limit the compatibility definitions to loading that package.
@@ -199,7 +227,22 @@ def configure_chinese(tex, font, preserve_layout=False):
         after = ["\\let\\" + name + r"\undefined"
                  for name in (*commands, "pdfglyphtounicode")]
         return "\n".join([*before, match[0], *after])
-    tex = axessibility.sub(load_axessibility, tex, count=1)
+    return axessibility.sub(load_axessibility, tex, count=1)
+
+
+def configure_chinese(tex, font, preserve_layout=False):
+    if not re.fullmatch(r"[\w .-]+", font):
+        raise ValueError("无效的中文字体名称")
+    if not preserve_layout:
+        tex = re.sub(r"(?m)^([ \t]*)\\linenumbers\b(?:\[[^\]\n]*\])?", r"\1", tex)
+    if re.search(r"\\usepackage(?:\[[^\]]*\])?\{xeCJK\}", COMMENT.sub("", tex)):
+        package = ""
+    else:
+        package = "\\usepackage{xeCJK}\n"
+    # xeCJK provides Unicode text directly. Preserve legacy CJK group scopes.
+    tex = re.sub(r"(?m)^[ \t]*\\usepackage\{CJKutf8\}", lambda _:
+                 r"\newenvironment{CJK}[2]{}{}" + "\n" + r"\newenvironment{CJK*}[2]{}{}", tex)
+    tex = xetex_compatible(tex)
     # The legacy Times package selects 8-bit fonts that drop Unicode characters
     # in references, code examples and prose under XeTeX.
     legacy_times = re.search(r"(?m)^[ \t]*\\usepackage\{times\}", tex)
@@ -291,7 +334,9 @@ def run(args, key):
     started = time.monotonic()
     if sys.platform != "darwin" or not (find_executable("tectonic") or find_executable("pdflatex")):
         raise ValueError("隔离编译需要 macOS，并安装 Tectonic 或 BasicTeX/MacTeX")
-    renderer = args.pdftoppm or shutil.which("pdftoppm")
+    global FETCH_PACKAGES
+    FETCH_PACKAGES = bool(getattr(args, "fetch_packages", False))
+    renderer = args.pdftoppm or find_executable("pdftoppm")
     if not renderer or not os.access(renderer, os.X_OK):
         raise ValueError("需要可运行的 Poppler pdftoppm，可用 --pdftoppm 指定")
     renderer = Path(renderer).resolve()
@@ -356,15 +401,44 @@ def run(args, key):
         baseline, baseline_pages = build(build_source / relative_root, work / "baseline",
                                          work / "baseline.log", build_source, baseline_engine)
     except ValueError:
-        # Some templates load pdfTeX-only packages without declaring it (e.g. axessibility).
-        if baseline_engine != "tectonic" or not (find_executable("pdflatex")
-                                                 and find_executable("xelatex")):
+        if baseline_engine != "tectonic":
             raise
-        print("Tectonic 无法编译英文基线，改用本机 TeX Live（PDFLaTeX + XeLaTeX）重试", flush=True)
-        args.texlive, baseline_engine = True, "pdflatex"
-        shutil.rmtree(work / "baseline", ignore_errors=True)
-        baseline, baseline_pages = build(build_source / relative_root, work / "baseline",
-                                         work / "baseline.log", build_source, baseline_engine)
+        first_log = work / "baseline-tectonic.log"
+        shutil.copyfile(work / "baseline.log", first_log)
+        baseline = None
+        # Many templates use pdfTeX idioms without declaring it (\pdfoutput=1, axessibility).
+        # The English reference may be built from a copy with those neutralized; the
+        # delivered translation still starts from the untouched source.
+        sources = {path: path.read_text(encoding="utf-8-sig", errors="replace")
+                   for path in sorted(build_source.rglob("*.tex"))}
+        if any(xetex_compatible(text) != text for text in sources.values()):
+            compatible = work / "baseline-source"
+            shutil.copytree(build_source, compatible)
+            for path, text in sources.items():
+                if xetex_compatible(text) != text:
+                    (compatible / path.relative_to(build_source)).write_text(
+                        xetex_compatible(text), encoding="utf-8")
+            shutil.rmtree(work / "baseline", ignore_errors=True)
+            try:
+                baseline, baseline_pages = build(compatible / relative_root, work / "baseline",
+                                                 work / "baseline.log", compatible, "tectonic")
+                print("英文基线已用 XeTeX 兼容副本编译", flush=True)
+            except ValueError:
+                pass
+        if baseline is None:
+            if not (find_executable("pdflatex") and find_executable("xelatex")):
+                raise ValueError(
+                    f"Tectonic 无法编译这篇论文的英文基线，日志：{first_log}。"
+                    "这类模板通常只支持 PDFLaTeX，请安装 TeX Live 后重试"
+                    "（brew install --cask mactex-no-gui）") from None
+            print("Tectonic 无法编译英文基线，改用本机 TeX Live（PDFLaTeX + XeLaTeX）重试", flush=True)
+            args.texlive, baseline_engine = True, "pdflatex"
+            shutil.rmtree(work / "baseline", ignore_errors=True)
+            try:
+                baseline, baseline_pages = build(build_source / relative_root, work / "baseline",
+                                                 work / "baseline.log", build_source, baseline_engine)
+            except ValueError as error:
+                raise ValueError(f"{error}（Tectonic 的日志：{first_log}）") from error
     download_and_baseline_seconds = round(time.monotonic() - started, 3)
 
     translated = work / "translated-source"
@@ -394,7 +468,7 @@ def run(args, key):
             if not args.original_layout:
                 content = re.sub(r"(?m)^[ \t]*\\begin\{document\}",
                              lambda match: HOOK + match[0], content, count=1)
-        (translated / path.relative_to(original)).write_text(content, encoding="utf-8")
+        (translated / path.relative_to(original)).write_text(xetex_compatible(content), encoding="utf-8")
     edited = {path.relative_to(original).as_posix() for path in translations}
     compatibility_patches = []
     if requires_pdftex:
@@ -411,9 +485,21 @@ def run(args, key):
 
     if args.original_layout:
         pdf, pages = compile_translation()
+        navigation = direct_links(pdf)
     else:
-        pdf, pages = build_with_returns(translated / relative_root, compile_translation)
-    navigation = direct_links(pdf)
+        try:
+            pdf, pages = build_with_returns(translated / relative_root, compile_translation)
+            navigation = direct_links(pdf)
+        except ValueError as error:
+            # The return links hook into natbib + hyperref internals; some bibliography
+            # styles (ACL's, for one) do not fit. The translation itself is unaffected.
+            print(f"这篇论文的模板不支持引用回跳导航（{error}），改为普通编译", flush=True)
+            target = translated / relative_root
+            target.write_text(target.read_text(encoding="utf-8").replace(HOOK, ""), encoding="utf-8")
+            (target.parent / "apt-citation-returns.tex").unlink(missing_ok=True)
+            shutil.rmtree(work / "compiled", ignore_errors=True)
+            pdf, pages = compile_translation()
+            navigation = direct_links(pdf)
     titles = check_titles(pdf, None if args.original_layout else original_title, translated_title)
     bibliography_entries = verify_bibliography(baseline, pdf)
     compile_log = pdf.with_suffix(".log").read_text(encoding="utf-8", errors="replace")
@@ -546,8 +632,11 @@ def main():
     parser.add_argument("--font", default="Songti SC")
     parser.add_argument("--jobs", type=int, choices=range(1, 9), metavar="1-8",
                         help="并发数，默认 4")
-    parser.add_argument("--max-requests", type=int, default=500)
+    parser.add_argument("--max-requests", type=int,
+                        help="本次模型请求上限，含重试；默认云端 500、本地 5000。0 表示只复用缓存")
     parser.add_argument("--pdftoppm", type=Path, help="Poppler pdftoppm 路径")
+    parser.add_argument("--fetch-packages", action="store_true",
+                        help="Tectonic 离线编译缺少宏包时，联网从 Tectonic 宏包库下载后重试（只下载宏包，论文源码仍在隔离环境中编译）")
     parser.add_argument("--tex-overlay", type=Path, help="可信的本地 TeX 依赖目录，不覆盖原稿")
     parser.add_argument("--save-source", action="store_true", help="额外保存 LaTeX 源码 ZIP")
     parser.add_argument("--zotero", action="store_true",
@@ -559,10 +648,10 @@ def main():
     args = parser.parse_args()
     try:
         args.zotero = args.zotero or args.zotero_replace
-        if args.max_requests < 0:
+        if args.max_requests is not None and args.max_requests < 0:
             raise ValueError("--max-requests 不能小于 0")
         config = {} if args.public_defaults else local_settings()
-        args.output = args.output or Path(config.get("output", "output"))
+        args.output = args.output or Path(config.get("output") or default_output()).expanduser()
         if not args.pdftoppm and config.get("pdftoppm"):
             args.pdftoppm = Path(config["pdftoppm"])
         if not args.tex_overlay and config.get("tex_overlay"):
@@ -573,6 +662,10 @@ def main():
             if overlay:
                 args.tex_overlay = Path(overlay)
         local = args.local or config.get("local") is True
+        if args.max_requests is None:
+            # A cloud budget guards the bill; local and session backends cost nothing per
+            # request, and a reviewed 250-paragraph paper alone needs more than 500.
+            args.max_requests = 5000 if local or args.chatgpt else 500
         if args.chatgpt:
             args.local = None
             args.model = args.model or "chatgpt-current-session"

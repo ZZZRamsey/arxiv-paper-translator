@@ -24,7 +24,7 @@ from .navigation import HOOK, build_with_returns
 from .translate import (DEFAULT_MODEL, LOCAL_HOST, LOCAL_MODEL, Translator,
                         bilingual_title, title_content)
 from .verify import check_titles, direct_links, inspect_pdf, render_hashes, verify_bibliography
-from .zotero import attach_pdf as attach_to_zotero
+from .zotero import ZoteroDuplicate, attach_pdf as attach_to_zotero
 from .settings import local_settings
 from .ollama import ensure_server, text_only
 
@@ -352,8 +352,19 @@ def run(args, key):
     print(f"英文基线编译：{relative_root}", flush=True)
     requires_pdftex = detect_engine(build_source, build_source / relative_root) == "pdflatex"
     baseline_engine = "pdflatex" if args.texlive or requires_pdftex else "tectonic"
-    baseline, baseline_pages = build(build_source / relative_root, work / "baseline",
-                                     work / "baseline.log", build_source, baseline_engine)
+    try:
+        baseline, baseline_pages = build(build_source / relative_root, work / "baseline",
+                                         work / "baseline.log", build_source, baseline_engine)
+    except ValueError:
+        # Some templates load pdfTeX-only packages without declaring it (e.g. axessibility).
+        if baseline_engine != "tectonic" or not (find_executable("pdflatex")
+                                                 and find_executable("xelatex")):
+            raise
+        print("Tectonic 无法编译英文基线，改用本机 TeX Live（PDFLaTeX + XeLaTeX）重试", flush=True)
+        args.texlive, baseline_engine = True, "pdflatex"
+        shutil.rmtree(work / "baseline", ignore_errors=True)
+        baseline, baseline_pages = build(build_source / relative_root, work / "baseline",
+                                         work / "baseline.log", build_source, baseline_engine)
     download_and_baseline_seconds = round(time.monotonic() - started, 3)
 
     translated = work / "translated-source"
@@ -504,8 +515,17 @@ def run(args, key):
     if getattr(args, "zotero", False):
         paper_id = re.sub(r"v\d+$", "", identifier)
         print("正在查找对应的 Zotero 条目并上传译文 PDF", flush=True)
-        attachment_key = attach_to_zotero(destination, paper_id, lookup["title"])
-        print(f"Zotero 附件已保存：{attachment_key}", flush=True)
+        try:
+            attachment_key, replaced = attach_to_zotero(
+                destination, paper_id, lookup["title"], getattr(args, "zotero_replace", False))
+        except ZoteroDuplicate as duplicate:
+            print(f"Zotero 提醒：{duplicate}", flush=True)
+        except (RuntimeError, OSError, requests.RequestException) as error:
+            # The translation itself is finished and saved; only the upload is missing.
+            print(f"Zotero 提醒：译文 PDF 已保存，但未能挂到 Zotero（{error}）", flush=True)
+        else:
+            suffix = f"，{replaced} 个旧译本已移入 Zotero 废纸篓" if replaced else ""
+            print(f"Zotero 附件已保存：{attachment_key}{suffix}", flush=True)
 
 
 def main():
@@ -532,10 +552,13 @@ def main():
     parser.add_argument("--save-source", action="store_true", help="额外保存 LaTeX 源码 ZIP")
     parser.add_argument("--zotero", action="store_true",
                         help="翻译完成后，通过 Zotero 本机 API 自动挂到对应论文条目")
+    parser.add_argument("--zotero-replace", action="store_true",
+                        help="条目下已有中文译本附件时，挂上新译文并把旧译本移入 Zotero 废纸篓")
     parser.add_argument("--strict", action="store_true", help="人工复核未完成时保留工作产物，禁止发布")
     parser.add_argument("--public-defaults", action="store_true", help="忽略本机固定配置")
     args = parser.parse_args()
     try:
+        args.zotero = args.zotero or args.zotero_replace
         if args.max_requests < 0:
             raise ValueError("--max-requests 不能小于 0")
         config = {} if args.public_defaults else local_settings()

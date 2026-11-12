@@ -45,6 +45,16 @@ python -m pip install .
 OPENROUTER_API_KEY="你的 API Key" .venv/bin/python -m paper_translate 2511.20785v3 --output ./output
 ~~~
 
+### 图形界面
+
+不想记参数时，可以在浏览器里操作。下面的命令会在本机 `127.0.0.1:8765` 启动界面并自动打开浏览器：
+
+~~~bash
+.venv/bin/python -m paper_translate.web
+~~~
+
+重新 `pip install .` 后也可以直接运行 `arxiv-translate-ui`。界面里可以粘贴 arXiv 编号或链接，切换 OpenRouter、Ollama、ChatGPT 三种翻译引擎，选择保存位置和各项开关，并查看实时进度与日志。界面只是命令行的一层表单，页面下方会显示等价的 `arxiv-translate` 命令。服务只监听本机，同一时间运行一个翻译任务；`--port` 可换端口，`--no-browser` 不自动打开浏览器。
+
 ### 2. 翻译一篇论文
 
 下面三种写法指向同一篇论文，任选一种运行。

@@ -9,3 +9,6 @@ output/
 local.json
 .arxiv-work/
 .translation-cache/
+
+.build-venv/
+.claude/

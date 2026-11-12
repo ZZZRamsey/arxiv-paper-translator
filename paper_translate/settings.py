@@ -4,8 +4,11 @@ import json
 from pathlib import Path
 
 
+CONFIG = Path.home() / ".config" / "arxiv-paper-translator" / "local.json"
+
+
 def local_settings():
-    path = Path.home() / ".config" / "arxiv-paper-translator" / "local.json"
+    path = CONFIG
     if not path.exists():
         return {}
     if path.stat().st_mode & 0o077:
@@ -25,3 +28,19 @@ def local_settings():
     if not isinstance(overlays, dict) or any(not isinstance(value, str) for value in overlays.values()):
         raise ValueError("tex_overlays 必须是 arXiv 编号到路径的对象")
     return data
+
+
+def update_settings(changes):
+    """Merge values into the per-machine file; None removes a key. The file may hold an API key."""
+    data = local_settings()
+    for name, value in changes.items():
+        if value is None:
+            data.pop(name, None)
+        else:
+            data[name] = value
+    CONFIG.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    pending = CONFIG.with_suffix(".tmp")
+    pending.touch(mode=0o600, exist_ok=True)
+    pending.chmod(0o600)
+    pending.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    pending.replace(CONFIG)

@@ -63,7 +63,8 @@ def return_source(path):
             raise ValueError(f"找不到文献条目：{key}")
         label = page_labels[index]
         if not PAGE.fullmatch(label):
-            raise ValueError(f"不支持的页码格式：{label}")
+            # Templates without printed page numbers (ACL styles) give an empty label.
+            label = str(index + 1)
         found[key].append((int(match[1]), index, label, name))
     lines = []
     for key, items in sorted(found.items()):

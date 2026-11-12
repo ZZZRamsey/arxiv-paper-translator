@@ -28,7 +28,8 @@ def check_titles(path, original, translated):
     first = PdfReader(path).pages[0].extract_text()
 
     def canonical(text):
-        return re.sub(r"\s+", "", unicodedata.normalize("NFKC", text))
+        # TeX writes quotes as `` and ''; the PDF has the typeset curly ones.
+        return re.sub(r"[\s`'\"\u2018\u2019\u201c\u201d]+", "", unicodedata.normalize("NFKC", text))
 
     verified = {}
     for name, title in (("original", original), ("translated", translated)):

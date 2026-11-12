@@ -6,6 +6,18 @@
 
 [快速开始](#快速开始) · [常用参数](#常用参数) · [输出文件](#输出文件) · [验证与限制](#验证与限制) · [完整教程](docs/TUTORIAL.zh-CN.md)
 
+## 安装
+
+三种方式，任选一种：
+
+| 方式 | 适合 | 做法 |
+| --- | --- | --- |
+| **macOS app** | 不想碰终端 | 下载 `.dmg`，把 arXiv Translator 拖进“应用程序”后双击。内置 Python、Tectonic 和 Poppler，首次启动有准备向导。见 [app 说明](docs/APP.zh-CN.md)。 |
+| **一键脚本** | 想用命令行或浏览器界面 | `git clone` 后运行 `./install.sh --with-deps`，得到 `arxiv-translate` 和 `arxiv-translate-ui` 两个命令。 |
+| **手动安装** | 开发和修改代码 | 按下面“快速开始”的步骤建虚拟环境并 `pip install .`。 |
+
+app 目前没有 Apple 开发者签名，首次打开需要在“系统设置 → 隐私与安全性”里点一次“仍要打开”。自己构建安装包：`./packaging/build_app.sh`。
+
 ## 快速开始
 
 完整的安装、OpenRouter、Ollama、当前 ChatGPT 会话、原始 LaTeX 排版、输出文件和故障排查说明见 [完整教程](docs/TUTORIAL.zh-CN.md)。下面保留最短可执行命令。
@@ -51,7 +63,7 @@ OPENROUTER_API_KEY="你的 API Key" .venv/bin/python -m paper_translate 2511.207
 OPENAI_API_KEY="你的 API Key" .venv/bin/python -m paper_translate 2511.20785v3 --openai --model gpt-4o-mini --output ./output
 ~~~
 
-默认接口是 `https://api.openai.com/v1/chat/completions`。远程 vLLM 可设置 `OPENAI_BASE_URL`，例如 `http://127.0.0.1:8000/v1`，并用 `OPENAI_MODEL` 指定服务端模型名。API key 也可以写入 `~/.config/arxiv-paper-translator/local.json` 的 `openai_api_key`，接口地址和模型分别使用 `openai_base_url`、`openai_model`。vLLM 不要求 key 时可以留空。
+默认接口是 `https://api.openai.com/v1/chat/completions`。远程 vLLM 可设置 `OPENAI_BASE_URL`，例如 `http://127.0.0.1:8000/v1`，并用 `OPENAI_MODEL` 指定服务端模型名。API key 也可以写入 `~/.config/arxiv-paper-translator/local.json` 的 `openai_api_key`，接口地址和模型分别使用 `openai_base_url`、`openai_model`。vLLM 不要求 key 时可以留空。这三项也可以在图形界面的“环境与默认设置”里填写；环境变量优先于保存的设置。
 
 ### 图形界面
 
@@ -125,11 +137,12 @@ arxiv-translate 2511.20785v3 --chatgpt ./translation-queue --original-layout --t
 | `--model ID` | 选择当前后端的模型。OpenRouter 优先使用 `OPENROUTER_MODEL`，OpenAI 优先使用 `OPENAI_MODEL`，本地模式下为 Ollama 模型名 |
 | `--jobs N` | 并发数，范围 1–8，默认 4 |
 | `--no-review` | 本地模式下跳过逐段复核 |
-| `--max-requests N` | 本次模型请求上限，含重试，默认 500。设为 0 时只复用译文缓存 |
+| `--max-requests N` | 本次模型请求上限，含重试。默认 OpenRouter 和 OpenAI 官方接口 500，本地、ChatGPT 会话和自建的 OpenAI 兼容接口 5000。设为 0 时只复用译文缓存 |
 | `--font NAME` | 指定已安装的中文字体 |
 | `--root FILE` | 多个根 TeX 文件无法自动区分时，指定源码包内的相对路径 |
 | `--tex-overlay DIR` | 加载可信的本地宏包目录，不覆盖原稿文件 |
 | `--pdftoppm PATH` | 手动指定 Poppler 的渲染程序 |
+| `--fetch-packages` | Tectonic 离线编译缺少宏包时，联网从 Tectonic 宏包库下载后重试；首次使用时自动下载基础宏包。论文源码仍在断网沙箱中编译 |
 | `--strict` | 如有待复核事项，返回非零状态，将产物保留在工作目录 |
 
 例如，固定论文版本并额外保留源码：
@@ -157,7 +170,7 @@ arxiv-translate 2503.09516v5 --output ./translated --save-source
 2. **保留 LaTeX 结构。** 保护公式、引文键和控制序列，保留原图及英文表格内容，翻译正文和图表说明。
 3. **编译并独立重建。** 对支持的 `natbib + hyperref` 论文生成双向引文链接。使用独立源码副本再次编译，逐页比较两份中文 PDF 的渲染结果。
 
-当前测试套件包含 **29 项测试**。LaTeX 流程和 ChatGPT、Ollama 后端均有对应的测试覆盖。[SWE-agent v3](https://arxiv.org/abs/2405.15793v3) 的 PDF 与可选 ZIP 流程均已实测。翻译流程会复用译文缓存，并通过独立重建比对。
+当前测试套件包含 **37 项测试**。LaTeX 流程和 ChatGPT、Ollama 后端均有对应的测试覆盖。[SWE-agent v3](https://arxiv.org/abs/2405.15793v3) 的 PDF 与可选 ZIP 流程均已实测。翻译流程会复用译文缓存，并通过独立重建比对。
 
 工具适用于提供可编译 LaTeX 源码的 arXiv 论文。仅 PDF 的稿件、扫描件、动态生成的输入树和其他文献后端（例如 `biblatex`）目前不在验证范围内。中文译文可能重新分页，逐页重建一致也不能替代译文语义和版式的人工复核。
 

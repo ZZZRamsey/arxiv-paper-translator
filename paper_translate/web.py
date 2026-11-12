@@ -18,8 +18,10 @@ from pathlib import Path
 
 import requests
 
+from . import texcache
+from .runtime import FROZEN, cli_command, default_output, support_dir
 from .sandbox import find_executable
-from .settings import local_settings
+from .settings import CONFIG, local_settings, update_settings
 from .source import normalize
 from .translate import DEFAULT_MODEL, LOCAL_HOST, LOCAL_MODEL, OPENAI_ENDPOINT
 from .zotero import attach_pdf as attach_to_zotero
@@ -85,8 +87,28 @@ class Job:
         }
 
 
+class Task:
+    """A setup step that runs in this process and reports lines, e.g. the TeX download."""
+
+    def __init__(self, name, work):
+        self.name, self.lines, self.status = name, [], "running"
+        threading.Thread(target=self.run, args=(work,), daemon=True).start()
+
+    def run(self, work):
+        try:
+            work(self.lines.append)
+            self.status = "done"
+        except (ValueError, OSError, subprocess.SubprocessError) as error:
+            self.lines.append(f"错误：{error}")
+            self.status = "failed"
+
+    def snapshot(self):
+        return {"name": self.name, "status": self.status, "lines": self.lines[-6:]}
+
+
 class State:
     job = None
+    task = None
     lock = threading.Lock()
 
 
@@ -121,15 +143,53 @@ def ollama_state():
     return state
 
 
+def environment(config):
+    """Everything a new user has to have before the first translation works."""
+    tectonic, pdftoppm = find_executable("tectonic"), config.get("pdftoppm") or find_executable("pdftoppm")
+    texlive = bool(find_executable("pdflatex") and find_executable("xelatex"))
+    return {
+        "tectonic": bool(tectonic), "tex_cache": texcache.CACHE.is_dir(), "texlive": texlive,
+        "pdftoppm": bool(pdftoppm and os.access(pdftoppm, os.X_OK)),
+        "font": Path("/System/Library/Fonts/Supplemental/Songti.ttc").exists(),
+        "ollama_installed": bool(find_executable("ollama") or Path("/Applications/Ollama.app").exists()),
+        "zotero_installed": Path("/Applications/Zotero.app").exists(),
+        "homebrew": bool(find_executable("brew")),
+        "configured": CONFIG.exists(), "app": FROZEN,
+    }
+
+
+def ui_state(update=None):
+    """Form state remembered across launches; the app's port, and so its web storage, changes."""
+    path = support_dir() / "ui-state.json"
+    if update is not None:
+        text = json.dumps(update, ensure_ascii=False)
+        if len(text) > 20000:
+            raise ValueError("界面状态过大")
+        path.write_text(text, encoding="utf-8")
+        return update
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+        return state if isinstance(state, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
 def describe():
     config, problem = settings()
-    pdftoppm = config.get("pdftoppm") or shutil.which("pdftoppm")
+    pdftoppm = config.get("pdftoppm") or find_executable("pdftoppm")
+    openai_url = os.getenv("OPENAI_BASE_URL") or config.get("openai_base_url") or OPENAI_ENDPOINT
     return {
-        "output": str(Path(config.get("output", "output")).expanduser().resolve()),
+        "output": str(Path(config.get("output") or default_output()).expanduser().resolve()),
+        "environment": environment(config),
+        "ui_state": ui_state(),
+        "task": State.task.snapshot() if State.task else None,
         "engine": "local" if config.get("local") is True else "openai" if config.get("openai") is True else "openrouter",
         "has_key": bool(os.getenv("OPENROUTER_API_KEY") or config.get("api_key")),
         "openai_has_key": bool(os.getenv("OPENAI_API_KEY") or config.get("openai_api_key")),
-        "openai_base_url": os.getenv("OPENAI_BASE_URL") or config.get("openai_base_url") or OPENAI_ENDPOINT,
+        "openai_base_url": openai_url,
+        "openai_official": openai_url.startswith("https://api.openai.com"),
+        "openai_from_env": {"base_url": bool(os.getenv("OPENAI_BASE_URL")),
+                            "model": bool(os.getenv("OPENAI_MODEL"))},
         "models": {"openrouter": os.getenv("OPENROUTER_MODEL") or DEFAULT_MODEL,
                    "openai": os.getenv("OPENAI_MODEL") or config.get("openai_model") or "gpt-4o-mini",
                    "local": os.getenv("OLLAMA_MODEL") or config.get("local_model") or LOCAL_MODEL},
@@ -141,7 +201,8 @@ def describe():
         "tools": {"tectonic": bool(find_executable("tectonic")),
                   "texlive": bool(find_executable("pdflatex") and find_executable("xelatex")),
                   "pdftoppm": bool(pdftoppm and os.access(pdftoppm, os.X_OK))},
-        "queue": str(Path("translation-queue").resolve()),
+        "queue": str((support_dir() / "translation-queue") if FROZEN
+                     else Path("translation-queue").resolve()),
         "config_problem": problem,
         "running": bool(State.job and State.job.status == "running"),
     }
@@ -173,8 +234,9 @@ def start(form):
         if key:
             environment["OPENAI_API_KEY"] = key
         configured = describe()
-        if not key and not configured["openai_has_key"] and configured["openai_base_url"].startswith("https://api.openai.com"):
-            raise ValueError("OpenAI API 需要 API key，请填写后重试，或在本机配置中设置 openai_api_key")
+        if (not key and not configured["openai_has_key"] and configured["openai_official"]
+                and form.get("max_requests") != 0):
+            raise ValueError("OpenAI API 需要 API key，请填写后重试，或在“环境与默认设置”里保存")
     elif engine == "chatgpt":
         arguments += ["--chatgpt", str(folder(form.get("queue"), "ChatGPT 队列目录"))]
     else:
@@ -186,7 +248,8 @@ def start(form):
     model = str(form.get("model") or "").strip()
     if model and engine != "chatgpt":
         arguments += ["--model", model]
-    for name in ("original_layout", "texlive", "save_source", "zotero", "zotero_replace", "strict"):
+    for name in ("original_layout", "texlive", "save_source", "zotero", "zotero_replace", "strict",
+                 "fetch_packages"):
         if form.get(name):
             arguments.append("--" + name.replace("_", "-"))
     jobs = form.get("jobs")
@@ -214,9 +277,45 @@ def start(form):
     with State.lock:
         if State.job and State.job.status == "running":
             raise ValueError("已有翻译任务在运行，请等待完成或先取消")
-        State.job = Job([sys.executable, "-u", "-m", "paper_translate", *arguments],
-                        environment, display, str(output), paper)
+        State.job = Job(cli_command(arguments), environment, display, str(output), paper)
     return State.job.snapshot()
+
+
+def save_settings(form):
+    """Persist the defaults a user chose in the setup panel."""
+    changes = {}
+    if "api_key" in form:
+        changes["api_key"] = str(form["api_key"] or "").strip() or None
+    if "output" in form:
+        changes["output"] = str(folder(form["output"], "保存位置"))
+    if "openai_api_key" in form:
+        changes["openai_api_key"] = str(form["openai_api_key"] or "").strip() or None
+    if "openai_base_url" in form:
+        url = str(form["openai_base_url"] or "").strip().rstrip("/")
+        if url and not re.fullmatch(r"https?://[^\s/?#]+(/[^\s?#]*)?", url):
+            raise ValueError("接口地址需要以 http:// 或 https:// 开头，例如 http://127.0.0.1:8000/v1")
+        changes["openai_base_url"] = url or None
+    if "openai_model" in form:
+        changes["openai_model"] = str(form["openai_model"] or "").strip() or None
+    if "engine" in form:
+        if form["engine"] not in ("openrouter", "openai", "local"):
+            raise ValueError("默认引擎只能是 OpenRouter、OpenAI API 或 Ollama")
+        changes["local"] = form["engine"] == "local"
+        changes["openai"] = True if form["engine"] == "openai" else None
+    if "local_model" in form:
+        changes["local_model"] = str(form["local_model"] or "").strip() or None
+    update_settings(changes)
+    return describe()
+
+
+def start_task(name):
+    with State.lock:
+        if State.task and State.task.status == "running":
+            raise ValueError("已有准备任务在运行")
+        if name != "tex":
+            raise ValueError("未知的准备任务")
+        State.task = Task(name, texcache.warm)
+    return State.task.snapshot()
 
 
 def replace_in_zotero(path):
@@ -290,6 +389,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply({"error": "forbidden"}, 403)
         if path == "/api/config":
             return self.reply(describe())
+        if path == "/api/task":
+            return self.reply(State.task.snapshot() if State.task else {"status": "idle"})
         if path == "/api/models":
             return self.reply(ollama_state())
         if path == "/api/job":
@@ -318,6 +419,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply({"ok": True})
             if self.path == "/api/zotero-replace":
                 return self.reply(replace_in_zotero(form.get("path", "")))
+            if self.path == "/api/ui-state":
+                ui_state(form)
+                return self.reply({"ok": True})
+            if self.path == "/api/settings":
+                return self.reply(save_settings(form))
+            if self.path == "/api/task":
+                return self.reply(start_task(str(form.get("name") or "")))
             if self.path == "/api/recent":
                 return self.reply({"files": recent(str(form.get("output") or ""))})
             self.reply({"error": "not found"}, 404)
@@ -330,6 +438,8 @@ def main():
     parser = argparse.ArgumentParser(description="在浏览器中使用 arXiv 论文翻译器")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--no-browser", action="store_true", help="只启动服务，不自动打开浏览器")
+    parser.add_argument("--exit-with-parent", action="store_true",
+                        help="启动它的进程退出后自动结束（供 macOS app 外壳使用）")
     args = parser.parse_args()
     try:
         server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
@@ -339,6 +449,21 @@ def main():
     print(f"界面已启动：{address}（Ctrl+C 退出）", flush=True)
     if not args.no_browser:
         threading.Timer(0.3, webbrowser.open, [address]).start()
+    if args.exit_with_parent:
+        parent = os.getppid()
+
+        def watch():
+            while os.getppid() == parent:
+                time.sleep(1)
+            if State.job:
+                State.job.cancel()
+            os._exit(0)
+
+        threading.Thread(target=watch, daemon=True).start()
+    def stop(*_):
+        raise KeyboardInterrupt  # the app shell ends us with SIGTERM; cancel the job on the way out
+
+    signal.signal(signal.SIGTERM, stop)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

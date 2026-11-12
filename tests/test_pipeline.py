@@ -6,7 +6,7 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import call, patch
+from unittest.mock import Mock, call, patch
 
 from paper_translate.cli import enable_xetex_translation, main, output_paths, patch_pdftex_styles
 from paper_translate.sandbox import detect_engine
@@ -57,6 +57,21 @@ class SourceTests(unittest.TestCase):
 
 
 class TranslationTests(unittest.TestCase):
+    def test_openai_backend_uses_openai_compatible_endpoint(self):
+        response = Mock(ok=True)
+        response.json.return_value = {
+            "choices": [{"message": {"content": "中文译文"}}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 2},
+        }
+        with tempfile.TemporaryDirectory() as temp, patch("requests.Session.post", return_value=response) as post:
+            model = Translator("test-key", "served-model", Path(temp),
+                               openai="http://vllm.example/v1")
+            self.assertEqual(model.complete("Translate this."), "中文译文")
+        post.assert_called_once()
+        self.assertEqual(post.call_args.args[0], "http://vllm.example/v1/chat/completions")
+        self.assertEqual(post.call_args.kwargs["headers"]["Authorization"], "Bearer test-key")
+        self.assertEqual(post.call_args.kwargs["json"]["model"], "served-model")
+
     def test_current_session_reads_answer_without_http(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -208,11 +223,14 @@ class TranslationTests(unittest.TestCase):
 
     def test_local_mask_merges_touching_placeholders_and_keeps_numbers(self):
         masked, saved = local_mask(r"We propose \textbf{Ours}, see Figure~\ref{f}. It gains 41\% on 7 sets.")
-        self.assertEqual(masked, "We propose [[[T0]]]Ours[[[T1]]], see Figure[[[T2]]]. It gains 41[[[T3]]] on 7 sets.")
-        self.assertEqual(saved, ["\\textbf{", "}", "~\\ref{f}", "\\%"])
-        faithful(masked, "我们提出 [[[T0]]]Ours[[[T1]]]，见图[[[T2]]]。在 7 个数据集上提升 41[[[T3]]]。")
+        self.assertEqual(masked, "We propose [[[T0]]]Ours[[[T1]]], see Figure[[[T2]]]. It gains 41% on 7 sets.")
+        self.assertEqual(saved, ["\\textbf{", "}", "~\\ref{f}"])
+        faithful(masked, "我们提出 [[[T0]]]Ours[[[T1]]]，见图[[[T2]]]。在 7 个数据集上提升 41%。")
+        self.assertEqual(restore("我们提出 [[[T0]]]Ours[[[T1]]]，见图[[[T2]]]。在 7 个数据集上提升 41%。",
+                                 saved, masked, tag_pairs(saved)),
+                         "我们提出 \\textbf{Ours}，见图~\\ref{f}。在 7 个数据集上提升 41\\%。")
         with self.assertRaises(ValueError):
-            faithful(masked, "我们提出 [[[T0]]]Ours[[[T1]]]，见图[[[T2]]]。在 7 个数据集上提升 14[[[T3]]]。")
+            faithful(masked, "我们提出 [[[T0]]]Ours[[[T1]]]，见图[[[T2]]]。在 7 个数据集上提升 14%。")
         with self.assertRaises(ValueError):
             faithful(masked, "我们提出 $[[[T0]]]Ours[[[T1]]]$，见图[[[T2]]]。在 7 个数据集上提升 41[[[T3]]]。")
 
@@ -248,15 +266,15 @@ class TranslationTests(unittest.TestCase):
     def test_whole_formatted_group_may_move_but_must_stay_nested(self):
         masked, saved = local_mask(r"\item We show \textbf{gains of 41\%} in setups (\textit{e.g.}, same data).")
         pairs = tag_pairs(saved)
-        self.assertEqual(saved, ["\\item", "\\textbf{", "\\%}", "\\textit{", "}"])
+        self.assertEqual(saved, ["\\item", "\\textbf{", "}", "\\textit{", "}"])
         self.assertEqual(pairs, {1: 2, 3: 4})
-        moved = "[[[T0]]] 在相同设置（[[[T3]]]e.g.[[[T4]]]，相同数据）下，我们展示了[[[T1]]]提升 41[[[T2]]]。"
+        moved = "[[[T0]]] 在相同设置（[[[T3]]]e.g.[[[T4]]]，相同数据）下，我们展示了[[[T1]]]提升 41%[[[T2]]]。"
         self.assertEqual(restore(moved, saved, masked, pairs),
                          r"\item 在相同设置（\textit{e.g.}，相同数据）下，我们展示了\textbf{提升 41\%}。")
         with self.assertRaises(ValueError):
             restore(moved, saved, masked)
         with self.assertRaises(ValueError):
-            restore("[[[T0]]] 我们展示了[[[T1]]]提升 41（[[[T3]]]e.g.[[[T2]]][[[T4]]]）。", saved, masked, pairs)
+            restore("[[[T0]]] 我们展示了[[[T1]]]提升 41%（[[[T3]]]e.g.[[[T2]]][[[T4]]]）。", saved, masked, pairs)
 
     def test_local_backend_calls_ollama_without_key(self):
         with tempfile.TemporaryDirectory() as temp:

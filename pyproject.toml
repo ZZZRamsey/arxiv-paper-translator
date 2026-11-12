@@ -10,6 +10,10 @@ dependencies = ["requests>=2.32,<3", "pypdf>=5,<7", "regex>=2024.11", "fonttools
 
 [project.scripts]
 arxiv-translate = "paper_translate.cli:main"
+arxiv-translate-ui = "paper_translate.web:main"
 
 [tool.setuptools]
 packages = ["paper_translate"]
+
+[tool.setuptools.package-data]
+paper_translate = ["web.html"]

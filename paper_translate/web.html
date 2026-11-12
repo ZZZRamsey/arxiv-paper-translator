@@ -1,0 +1,698 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>arXiv 论文翻译</title>
+<style>
+/* Layout: one 720px column — paper field on top, settings sheet below, run panel takes the top slot while a job exists. */
+:root {
+  --bg: #f3f5f8; --surface: #ffffff; --sunken: #eceff4; --line: #dde2ea; --line-strong: #c5ccd8;
+  --fg: #18202e; --muted: #5d6879; --faint: #8a94a4;
+  --accent: #2446c8; --accent-fg: #ffffff; --accent-soft: #e6ebfb;
+  --good: #1b7a4b; --good-soft: #e2f3ea; --bad: #b3261e; --bad-soft: #fbe9e7; --warn: #8a5a00; --warn-soft: #fbf0d6;
+  --display: "Songti SC", "STSong", "Noto Serif CJK SC", serif;
+  --body: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --mono: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  --radius: 10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11151c; --surface: #191f29; --sunken: #141922; --line: #2a3240; --line-strong: #3b4556;
+    --fg: #e6eaf1; --muted: #9aa5b6; --faint: #6f7a8b;
+    --accent: #8ea6ff; --accent-fg: #0d1430; --accent-soft: #1f294a;
+    --good: #6fd3a0; --good-soft: #17301f; --bad: #ff9a90; --bad-soft: #3a1b19; --warn: #f0c36a; --warn-soft: #33290f;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html { color-scheme: light dark; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.55 var(--body); -webkit-font-smoothing: antialiased; }
+[hidden] { display: none !important; }
+main { max-width: 720px; margin: 0 auto; padding: 48px 20px 72px; display: flex; flex-direction: column; gap: 20px; }
+header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+h1 { font: 600 26px/1.2 var(--display); margin: 0; letter-spacing: .02em; }
+h1 small { font: 400 13px var(--body); color: var(--muted); margin-left: 10px; letter-spacing: 0; }
+h2 { font: 600 12px var(--body); color: var(--muted); letter-spacing: .08em; margin: 0; }
+button, input, select { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* paper field */
+.paper { display: flex; gap: 8px; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 14px; padding: 8px; transition: border-color .15s, box-shadow .15s; }
+.paper:focus-within { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+.paper input { flex: 1; min-width: 0; border: 0; background: none; outline: none; padding: 10px 12px; font: 17px var(--mono); }
+.paper input::placeholder { color: var(--faint); font-family: var(--body); font-size: 15px; }
+.go { border: 0; border-radius: 9px; background: var(--accent); color: var(--accent-fg); font-weight: 600; padding: 0 24px; cursor: pointer; white-space: nowrap; }
+.go:hover:not(:disabled) { filter: brightness(1.08); }
+.go:disabled { opacity: .45; cursor: not-allowed; }
+.hint { min-height: 21px; margin: -10px 4px 0; color: var(--muted); font-size: 13px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.hint code { font: 13px var(--mono); color: var(--fg); }
+.hint.bad { color: var(--bad); }
+.pill { display: inline-flex; align-items: center; gap: 5px; padding: 1px 9px; border-radius: 99px; font-size: 12px; background: var(--sunken); color: var(--muted); white-space: nowrap; }
+.pill.good { background: var(--good-soft); color: var(--good); }
+.pill.bad { background: var(--bad-soft); color: var(--bad); }
+.pill.warn { background: var(--warn-soft); color: var(--warn); }
+.pill.live { background: var(--accent-soft); color: var(--accent); }
+
+/* sheets */
+.sheet { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+.sheet > .row, .sheet > details > .row { border-top: 1px solid var(--line); }
+.sheet > .row:first-child { border-top: 0; }
+.row { display: grid; grid-template-columns: 148px minmax(0, 1fr); gap: 6px 16px; padding: 14px 18px; align-items: center; }
+.row > label, .row > .label { color: var(--fg); font-weight: 500; }
+.row .note { grid-column: 2; color: var(--muted); font-size: 12.5px; margin-top: -2px; }
+.field { display: flex; gap: 8px; min-width: 0; }
+input[type=text], input[type=password], input[type=number], select {
+  width: 100%; min-width: 0; padding: 7px 10px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface); }
+input.path, input.code, select.code { font: 13px var(--mono); }
+input:focus-visible, select:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.btn { border: 1px solid var(--line-strong); background: var(--surface); border-radius: 7px; padding: 6px 12px; cursor: pointer; white-space: nowrap; }
+.btn:hover { background: var(--sunken); }
+.btn.danger { color: var(--bad); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
+
+.label { display: flex; align-items: center; gap: 7px; }
+.help-wrap { position: relative; display: inline-flex; }
+.help { width: 18px; height: 18px; padding: 0; border-radius: 50%; border: 1px solid var(--line-strong); background: none; color: var(--muted); font: 600 11px/1 var(--body); cursor: help; }
+.help-wrap:hover .help, .help-wrap:focus-within .help { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.tip { display: none; position: absolute; left: -12px; top: 100%; padding-top: 9px; z-index: 6; width: min(350px, calc(100vw - 40px)); }
+.help-wrap:hover .tip, .help-wrap:focus-within .tip { display: block; }
+.tip-card { background: var(--surface); border: 1px solid var(--line-strong); border-radius: 12px; box-shadow: 0 10px 32px rgba(10, 20, 40, .18); padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; font-weight: 400; font-size: 12.5px; line-height: 1.6; color: var(--muted); cursor: default; }
+.tip-card section b { display: block; color: var(--fg); font-weight: 600; margin-bottom: 2px; }
+.tip-card code { font: 12px var(--mono); color: var(--fg); background: var(--sunken); padding: 1px 5px; border-radius: 4px; word-break: break-all; }
+.tip-cmd { display: flex; align-items: center; gap: 6px; margin-top: 5px; }
+.tip-cmd code { flex: 1; min-width: 0; padding: 5px 8px; }
+.tip-cmd .btn { padding: 2px 9px; font-size: 12px; }
+
+.picker { position: relative; display: flex; gap: 8px; min-width: 0; }
+.picker-button { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; text-align: left; padding: 7px 10px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface); cursor: pointer; }
+.picker-button:hover { border-color: var(--muted); }
+.picker-button[aria-expanded=true], .picker-button:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.picker-button::after { content: ""; flex: none; width: 6px; height: 6px; border: solid var(--muted); border-width: 0 1.5px 1.5px 0; transform: translateY(-2px) rotate(45deg); }
+.picker .name { font: 13px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker .name.placeholder { font-family: var(--body); color: var(--muted); }
+.picker .meta { margin-left: auto; color: var(--faint); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.picker-list { position: absolute; left: 0; right: 0; top: calc(100% + 5px); z-index: 5; margin: 0; padding: 5px; list-style: none; max-height: 320px; overflow: auto; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 10px; box-shadow: 0 10px 32px rgba(10, 20, 40, .18); }
+.picker-list li { display: flex; align-items: center; gap: 8px; padding: 8px 10px 8px 28px; border-radius: 6px; cursor: pointer; position: relative; }
+.picker-list li.active { background: var(--sunken); }
+.picker-list li[aria-selected=true]::before { content: ""; position: absolute; left: 11px; top: 50%; width: 4px; height: 8px; border: solid var(--accent); border-width: 0 2px 2px 0; transform: translateY(-65%) rotate(45deg); }
+.picker-list li[aria-selected=true] .name { color: var(--accent); font-weight: 600; }
+.picker-list li.rule { margin-top: 5px; }
+.picker-list li.rule::after { content: ""; position: absolute; left: 6px; right: 6px; top: -3px; border-top: 1px solid var(--line); }
+.picker-list .pill { font-size: 11px; padding: 0 7px; }
+.icon-btn { flex: none; width: 34px; padding: 0; display: grid; place-items: center; }
+.icon-btn svg { width: 15px; height: 15px; }
+.icon-btn.busy svg { animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .icon-btn.busy svg { animation: none; } }
+@media (max-width: 560px) { .picker-list .meta { display: none; } }
+
+.seg { display: grid; grid-template-columns: repeat(3, 1fr); background: var(--sunken); border-radius: 9px; padding: 3px; gap: 3px; }
+.seg label { position: relative; text-align: center; padding: 7px 6px; border-radius: 7px; cursor: pointer; color: var(--muted); line-height: 1.25; }
+.seg label small { display: block; font-size: 11.5px; color: var(--faint); }
+.seg input { position: absolute; opacity: 0; inset: 0; cursor: pointer; }
+.seg label:has(input:checked) { background: var(--surface); color: var(--fg); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+.seg label:has(input:focus-visible) { outline: 2px solid var(--accent); }
+
+.toggle { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 12px 18px; border-top: 1px solid var(--line); cursor: pointer; }
+.toggle span b { font-weight: 500; display: block; }
+.toggle span small { color: var(--muted); font-size: 12.5px; }
+.toggle input { appearance: none; -webkit-appearance: none; flex: none; width: 38px; height: 22px; border-radius: 99px; background: var(--line-strong); position: relative; cursor: pointer; transition: background .15s; margin: 0; }
+.toggle input::after { content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.25); transition: transform .15s; }
+.toggle input:checked { background: var(--accent); }
+.toggle input:checked::after { transform: translateX(16px); }
+.toggle input:disabled { opacity: .4; cursor: not-allowed; }
+
+details > summary { list-style: none; cursor: pointer; padding: 12px 18px; color: var(--muted); border-top: 1px solid var(--line); display: flex; align-items: center; gap: 8px; }
+details > summary::-webkit-details-marker { display: none; }
+details > summary::before { content: "›"; display: inline-block; transition: transform .15s; font-size: 16px; line-height: 1; }
+details[open] > summary::before { transform: rotate(90deg); }
+.range { display: flex; align-items: center; gap: 12px; }
+.range input { flex: 1; accent-color: var(--accent); }
+.range output { font: 13px var(--mono); width: 1.5em; text-align: right; }
+
+.command { display: flex; gap: 10px; align-items: flex-start; background: var(--sunken); border-radius: var(--radius); padding: 10px 12px 10px 14px; }
+.command code { flex: 1; min-width: 0; font: 12.5px/1.6 var(--mono); color: var(--muted); word-break: break-all; }
+.command code::before { content: "$ "; color: var(--faint); }
+.command .btn { padding: 3px 10px; font-size: 12.5px; }
+
+/* run panel */
+.run { padding: 18px; display: flex; flex-direction: column; gap: 16px; }
+.run-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.run-head .title { display: flex; align-items: center; gap: 10px; min-width: 0; flex-wrap: wrap; }
+.run-head code { font: 600 15px var(--mono); }
+.run-head time { color: var(--muted); font: 13px var(--mono); font-variant-numeric: tabular-nums; }
+.steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.steps li { font-size: 12px; color: var(--faint); padding-top: 9px; border-top: 3px solid var(--line); text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.steps li.done { border-color: var(--accent); color: var(--muted); }
+.steps li.now { border-color: var(--accent); color: var(--fg); font-weight: 600; }
+.steps li.now { animation: pulse 1.6s ease-in-out infinite; }
+.steps.stopped li.now { animation: none; border-color: var(--bad); }
+@keyframes pulse { 50% { border-color: var(--accent-soft); } }
+@media (prefers-reduced-motion: reduce) { .steps li.now { animation: none; } * { transition: none !important; } }
+.bar { height: 6px; background: var(--sunken); border-radius: 99px; overflow: hidden; }
+.bar i { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 99px; transition: width .4s; }
+.progress { display: flex; flex-direction: column; gap: 6px; }
+.progress p { margin: 0; color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.banner { border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+.banner.good { background: var(--good-soft); }
+.banner.bad { background: var(--bad-soft); color: var(--bad); }
+.banner.info { background: var(--accent-soft); }
+.banner p { margin: 0; word-break: break-all; }
+.banner .path { font: 12.5px var(--mono); }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.log { margin: 0; max-height: 220px; overflow: auto; background: var(--sunken); border-radius: 8px; padding: 10px 12px; font: 12px/1.65 var(--mono); color: var(--muted); white-space: pre-wrap; word-break: break-all; }
+
+.recent { list-style: none; margin: 0; padding: 0; }
+.recent li { display: flex; align-items: center; gap: 12px; padding: 10px 18px; border-top: 1px solid var(--line); }
+.recent li:first-child { border-top: 0; }
+.recent .name { flex: 1; min-width: 0; font: 13px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recent .meta { color: var(--faint); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.recent .btn { padding: 3px 10px; font-size: 12.5px; }
+.section { display: flex; flex-direction: column; gap: 8px; }
+.empty { padding: 14px 18px; color: var(--faint); }
+.toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); background: var(--fg); color: var(--bg); padding: 8px 16px; border-radius: 8px; font-size: 13px; max-width: calc(100vw - 40px); z-index: 5; }
+
+@media (max-width: 560px) {
+  main { padding: 28px 16px 56px; }
+  .row { grid-template-columns: 1fr; }
+  .row .note { grid-column: 1; }
+  .paper { flex-direction: column; }
+  .go { padding: 11px; }
+  .steps { grid-template-columns: repeat(4, 1fr); row-gap: 10px; }
+  .recent .meta { display: none; }
+}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>arXiv 论文翻译<small>LaTeX 源码 → 中文 PDF</small></h1>
+    <span id="tools" class="hint"></span>
+  </header>
+
+  <form id="form" class="section" autocomplete="off">
+    <div class="paper">
+      <input id="paper" type="text" spellcheck="false" autofocus aria-label="arXiv 编号或链接"
+             placeholder="粘贴 arXiv 编号或链接，例如 2503.09516 或 https://arxiv.org/abs/2503.09516">
+      <button id="go" class="go" type="submit" disabled>开始翻译</button>
+    </div>
+    <p id="hint" class="hint" style="margin-top:2px">支持编号、带版本号的编号（2503.09516v5）、abs 链接和 pdf 链接。</p>
+  </form>
+
+  <section id="run" class="sheet run" hidden aria-live="polite">
+    <div class="run-head">
+      <div class="title"><code id="run-paper"></code><span id="run-status" class="pill"></span><time id="run-time"></time></div>
+      <div class="actions">
+        <button id="cancel" class="btn danger" type="button">取消任务</button>
+        <button id="dismiss" class="btn" type="button" hidden>关闭</button>
+      </div>
+    </div>
+    <ol id="steps" class="steps">
+      <li>锁定版本</li><li>下载原稿</li><li>英文基线</li><li>翻译</li><li>中文编译</li><li>核验重建</li><li>完成</li>
+    </ol>
+    <div id="progress" class="progress" hidden><div class="bar"><i id="bar"></i></div><p id="progress-text"></p></div>
+    <div id="queue-note" class="banner info" hidden><p>正在等待 ChatGPT / Codex 会话处理队列目录中的 <code>*.request.json</code> 并回写译文。</p></div>
+    <div id="result" class="banner" hidden></div>
+    <pre id="log" class="log" tabindex="0" aria-label="运行日志"></pre>
+  </section>
+
+  <div class="section">
+    <h2>翻译设置</h2>
+    <div class="sheet">
+      <div class="row">
+        <span class="label" id="engine-label">翻译引擎</span>
+        <div class="seg" role="radiogroup" aria-labelledby="engine-label">
+          <label><input type="radio" name="engine" id="engine-openrouter" value="openrouter">OpenRouter<small>云端 API</small></label>
+          <label><input type="radio" name="engine" id="engine-local" value="local">Ollama<small>本机，不出网</small></label>
+          <label><input type="radio" name="engine" id="engine-openai" value="openai">OpenAI API<small>兼容远程 vLLM</small></label>
+        </div>
+        <p id="engine-note" class="note"></p>
+      </div>
+      <div class="row" id="row-model">
+        <div class="label">
+          <label for="model" id="model-label">模型</label>
+          <span class="help-wrap">
+            <button type="button" class="help" id="model-help" aria-label="模型从哪里来、如何添加" aria-describedby="model-tip">?</button>
+            <span class="tip" id="model-tip" role="tooltip"><span class="tip-card" id="tip-card"></span></span>
+          </span>
+        </div>
+        <div class="field" style="flex-direction:column">
+          <div class="picker" id="picker">
+            <button type="button" class="picker-button" id="picker-button" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="model-label picker-name">
+              <span class="name" id="picker-name"></span><span class="meta" id="picker-meta"></span>
+            </button>
+            <button type="button" class="btn icon-btn" id="model-refresh" title="重新检测本机模型" aria-label="重新检测本机模型">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.7-4"/><path d="M13.6 2.2v2.6H11"/></svg>
+            </button>
+            <ul class="picker-list" id="picker-list" role="listbox" aria-labelledby="model-label" hidden></ul>
+          </div>
+          <input id="model" class="code" type="text" list="model-list" spellcheck="false" aria-label="模型 ID">
+        </div>
+        <datalist id="model-list"></datalist>
+        <p id="model-note" class="note"></p>
+      </div>
+      <div class="row" id="row-key">
+        <label for="api-key">API key</label>
+        <input id="api-key" type="password" autocomplete="off" placeholder="sk-or-…">
+        <p id="key-note" class="note"></p>
+      </div>
+      <div class="row" id="row-queue">
+        <label for="queue">队列目录</label>
+        <div class="field"><input id="queue" class="path" type="text" spellcheck="false"><button class="btn" type="button" data-pick="queue">选择…</button></div>
+        <p class="note">程序把请求写入这个目录，由能读写本机文件的 ChatGPT / Codex 会话回写译文。</p>
+      </div>
+      <div class="row">
+        <label for="output">保存位置</label>
+        <div class="field"><input id="output" class="path" type="text" spellcheck="false"><button class="btn" type="button" data-pick="output">选择…</button><button class="btn" type="button" id="open-output" title="在 Finder 中打开">打开</button></div>
+        <p class="note">译文保存为 <code>&lt;编号&gt;_zh_CN_&lt;简称&gt;.pdf</code>，已有同名文件不会被覆盖。</p>
+      </div>
+      <label class="toggle"><span><b>保存 LaTeX 源码</b><small>额外输出可独立重建的源码 ZIP</small></span><input type="checkbox" id="save_source"></label>
+      <label class="toggle"><span><b>沿用原文排版</b><small>保留模板自身的标题、行号和引用样式；关闭时首页为中英双语标题并生成双向引用导航</small></span><input type="checkbox" id="original_layout"></label>
+      <label class="toggle"><span><b>使用本机 TeX Live 编译</b><small id="texlive-note">PDFLaTeX 编译英文基线，XeLaTeX 编译中文；关闭时使用 Tectonic</small></span><input type="checkbox" id="texlive"></label>
+      <label class="toggle" id="row-review"><span><b>逐段复核</b><small>本地模型每段译完再检查一遍；关闭后耗时约减半，误译略多</small></span><input type="checkbox" id="review" checked></label>
+      <label class="toggle"><span><b>保存到 Zotero</b><small>完成后按 arXiv 编号匹配本机 Zotero 条目并挂为子附件</small></span><input type="checkbox" id="zotero"></label>
+      <label class="toggle" id="row-zotero-replace"><span><b>覆盖 Zotero 旧译本</b><small>条目下已有中文译本时，挂上新译文并把旧附件移入 Zotero 废纸篓；关闭时只提醒、不重复挂载</small></span><input type="checkbox" id="zotero_replace"></label>
+      <details id="advanced">
+        <summary>高级选项</summary>
+        <div class="row">
+          <label for="jobs">并发数</label>
+          <div class="range"><input id="jobs" type="range" min="1" max="8" step="1" value="4"><output id="jobs-out" for="jobs">4</output></div>
+        </div>
+        <div class="row">
+          <label for="max_requests">请求上限</label>
+          <input id="max_requests" type="number" min="0" step="1" value="500">
+          <p class="note">本次模型请求总数，含重试。填 0 时只复用译文缓存。</p>
+        </div>
+        <div class="row">
+          <label for="font">中文字体</label>
+          <input id="font" type="text" list="font-list" value="Songti SC">
+          <datalist id="font-list"></datalist>
+        </div>
+        <div class="row">
+          <label for="root">根 TeX 文件</label>
+          <input id="root" class="path" type="text" spellcheck="false" placeholder="自动识别">
+          <p class="note">源码包里有多个根文件且无法自动区分时，填写相对路径，如 <code>main.tex</code>。</p>
+        </div>
+        <div class="row">
+          <label for="tex_overlay">本地宏包目录</label>
+          <div class="field"><input id="tex_overlay" class="path" type="text" spellcheck="false" placeholder="不使用"><button class="btn" type="button" data-pick="tex_overlay">选择…</button></div>
+        </div>
+        <label class="toggle"><span><b>严格模式</b><small>有待人工复核事项时不发布 PDF，产物保留在工作目录</small></span><input type="checkbox" id="strict"></label>
+      </details>
+    </div>
+    <div class="command"><code id="command"></code><button class="btn" type="button" id="copy">复制</button></div>
+  </div>
+
+  <div class="section">
+    <h2>最近译文</h2>
+    <div class="sheet"><ul id="recent" class="recent"><li class="empty">保存位置中还没有译文。</li></ul></div>
+  </div>
+</main>
+<div id="toast" class="toast" hidden role="status"></div>
+
+<script>
+const TOKEN = "__TOKEN__";
+const $ = id => document.getElementById(id);
+const ID = /^(?:\d{4}\.\d{4,5}|[a-zA-Z][a-zA-Z0-9.-]*\/\d{7})(?:v[1-9]\d*)?$/;
+const TEXT = ["model", "queue", "output", "max_requests", "font", "root", "tex_overlay"];
+const FLAGS = ["save_source", "original_layout", "texlive", "review", "zotero", "zotero_replace", "strict"];
+const STAGES = [/^正在解析 arXiv/, /^正在下载同版本/, /^英文基线编译/, /^翻译 \d+ 个文本块/, /^中文编译/, /^(?:中文 PDF 已编译|从独立目录重建)/, /^PDF 已保存/];
+let manual = false, active = 0, detecting = null, lastDetect = 0;
+let config = null, models = {}, timer = null, cursor = 0, stage = -1, running = false, dismissed = false;
+
+async function api(path, body) {
+  const options = { headers: { "X-Token": TOKEN } };
+  if (body !== undefined) Object.assign(options, { method: "POST", body: JSON.stringify(body) });
+  const response = await fetch(path, options);
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "请求失败");
+  return data;
+}
+function toast(message) {
+  const node = $("toast");
+  node.textContent = message; node.hidden = false;
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => node.hidden = true, 3200);
+}
+function parsePaper(value) {
+  value = value.trim();
+  if (!value) return null;
+  if (value.includes("://")) {
+    let url; try { url = new URL(value); } catch { return { error: "链接格式不正确" }; }
+    if (!/^https?:$/.test(url.protocol) || !/^(www\.)?arxiv\.org$/i.test(url.hostname)) return { error: "需要 arxiv.org 的 abs 或 pdf 链接" };
+    const match = decodeURIComponent(url.pathname).match(/^\/(?:abs|pdf)\/(.+)$/);
+    value = match ? match[1] : "";
+  }
+  value = value.replace(/^arXiv:/, "").replace(/\.pdf$/, "");
+  if (!ID.test(value)) return { error: "无法识别为 arXiv 编号" };
+  const version = value.match(/v(\d+)$/);
+  return { id: value.replace(/v\d+$/, ""), version: version ? version[1] : null };
+}
+const engine = () => document.querySelector("input[name=engine]:checked").value;
+const quote = text => /^[\w@%+=:,./-]+$/.test(text) ? text : "'" + text.replace(/'/g, "'\\''") + "'";
+
+function collect() {
+  const kind = engine(), number = id => $(id).value.trim() === "" ? null : Number($(id).value);
+  const form = { paper: $("paper").value.trim(), engine: kind, output: $("output").value.trim(),
+                 model: $("model").value.trim(), jobs: Number($("jobs").value), max_requests: number("max_requests"),
+                 font: $("font").value.trim(), root: $("root").value.trim(), tex_overlay: $("tex_overlay").value.trim() };
+  for (const flag of FLAGS) form[flag] = $(flag).checked;
+  form.zotero_replace = form.zotero && form.zotero_replace;
+  if (kind === "openrouter" || kind === "openai") form.api_key = $("api-key").value;
+  return form;
+}
+function commandLine(form) {
+  const parts = ["arxiv-translate", form.paper || "<arXiv 编号>", "--output", form.output || "<目录>"];
+  if (form.engine === "local") { parts.push("--local"); if (!form.review) parts.push("--no-review"); }
+  if (form.engine === "openai") parts.push("--openai");
+  if (form.model && form.engine !== "chatgpt" && config && form.model !== config.models[form.engine]) parts.push("--model", form.model);
+  if (form.zotero_replace) form.zotero = false;
+  for (const flag of ["original_layout", "texlive", "save_source", "zotero", "zotero_replace", "strict"]) if (form[flag]) parts.push("--" + flag.replace("_", "-"));
+  if (form.jobs !== 4) parts.push("--jobs", String(form.jobs));
+  if (form.max_requests !== null && form.max_requests !== 500) parts.push("--max-requests", String(form.max_requests));
+  if (form.font && form.font !== "Songti SC") parts.push("--font", form.font);
+  if (form.root) parts.push("--root", form.root);
+  if (form.tex_overlay) parts.push("--tex-overlay", form.tex_overlay);
+  return parts.map(quote).join(" ");
+}
+function save() {
+  const state = { engine: engine(), models };
+  for (const id of TEXT) if (id !== "model") state[id] = $(id).value;
+  state.jobs = $("jobs").value;
+  for (const flag of FLAGS) state[flag] = $(flag).checked;
+  state.advanced = $("advanced").open;
+  try { localStorage.setItem("arxiv-translate-ui", JSON.stringify(state)); } catch {}
+}
+function refresh() {
+  const kind = engine(), paper = parsePaper($("paper").value), hint = $("hint");
+  $("row-model").hidden = false;
+  $("row-key").hidden = kind !== "openrouter" && kind !== "openai";
+  $("row-queue").hidden = true;
+  $("row-review").hidden = kind !== "local";
+  $("row-zotero-replace").hidden = !$("zotero").checked;
+  hint.className = "hint" + (paper && paper.error ? " bad" : "");
+  if (!paper) hint.textContent = "支持编号、带版本号的编号（2503.09516v5）、abs 链接和 pdf 链接。";
+  else if (paper.error) hint.textContent = paper.error + "，请检查后重试。";
+  else {
+    hint.innerHTML = '<span class="pill good">已识别</span> <code></code> <span></span>';
+    hint.querySelector("code").textContent = paper.id;
+    hint.querySelector("span:last-child").textContent = paper.version ? "固定 v" + paper.version : "将锁定最新版本";
+  }
+  $("go").disabled = running || !paper || !!paper.error;
+  $("go").textContent = running ? "翻译中…" : "开始翻译";
+  $("jobs-out").textContent = $("jobs").value;
+  if (config) {
+    const local = kind === "local", found = local && chosenModel(), value = $("model").value.trim();
+    const names = installed().map(model => model.name);
+    $("picker").hidden = !local;
+    $("model").hidden = !!found;
+    $("model").placeholder = local ? "输入模型名称，例如 qwen3:8b" : "";
+    $("engine-note").textContent = kind === "openrouter" ? "待译文本发送到 OpenRouter，使用对应账户的额度。"
+      : kind === "openai" ? "待译文本发送到 OpenAI API 或配置的 OpenAI 兼容 vLLM 接口。"
+      : local ? (config.ollama.models ? "Ollama 已在 " + config.ollama.host + " 运行，待译文本不会离开本机。" : "未检测到正在运行的 Ollama，开始翻译时会尝试自动启动。")
+      : "";
+    $("model-note").textContent = !local ? ""
+      : !config.ollama.models ? "没有连上 Ollama，暂时无法列出已安装的模型。可以先手动填写名称，或启动 Ollama 后点右侧按钮重新检测。"
+      : !names.length ? "Ollama 里还没有任何模型，请先运行 ollama pull 下载一个，再点右侧按钮重新检测。"
+      : found ? (found.vision ? "这个模型带视觉模块，翻译时会自动改用去掉视觉模块的副本以节省内存。" : "")
+      : value && !names.includes(value + ":latest") ? "本机还没有 " + value + "，请先运行 ollama pull " + value + "。"
+      : "";
+    renderPicker(found); renderTip(kind);
+    $("model-list").replaceChildren(...(kind === "local" ? [] : [config.models.openrouter, config.models.openai, "deepseek/deepseek-chat"])
+      .filter((name, index, all) => all.indexOf(name) === index).map(name => new Option(name)));
+    const hasKey = kind === "openai" ? config.openai_has_key : config.has_key;
+    $("key-note").textContent = hasKey ? "已从环境变量或本机配置读取 key，留空即可。此处填写的 key 只用于本次任务，不会保存。" : "只用于本次任务，不会保存到磁盘或浏览器。";
+    $("api-key").placeholder = hasKey ? "已配置，留空使用" : kind === "openai" ? "sk-…（vLLM 可留空）" : "sk-or-…";
+  }
+  $("command").textContent = commandLine(collect());
+}
+/* local model picker */
+const installed = () => (config && config.ollama.models) || [];
+const chosenModel = () => !manual && installed().find(model => model.name === $("model").value.trim());
+const metaOf = model => [model.params, model.quant, (model.size / 1e9).toFixed(1) + " GB"].filter(Boolean).join(" · ");
+function node(tag, cls, text) { const el = document.createElement(tag); if (cls) el.className = cls; if (text !== undefined) el.textContent = text; return el; }
+function renderPicker(found) {
+  const value = $("model").value.trim(), name = $("picker-name");
+  name.className = "name" + (found ? "" : " placeholder");
+  name.textContent = found ? found.name : !config.ollama.models ? "未连接 Ollama" : !installed().length ? "还没有安装模型" : "手动输入模型名称";
+  $("picker-meta").textContent = found ? metaOf(found) : installed().length ? "已安装 " + installed().length + " 个" : "";
+  const list = $("picker-list"); list.replaceChildren();
+  installed().forEach((model, index) => {
+    const item = node("li"); item.id = "picker-option-" + index; item.setAttribute("role", "option");
+    item.dataset.value = model.name; item.setAttribute("aria-selected", String(found === model));
+    item.append(node("span", "name", model.name));
+    if (model.name === config.models.local) item.append(node("span", "pill live", "默认"));
+    if (model.loaded) item.append(node("span", "pill good", "已载入内存"));
+    if (model.vision) item.append(node("span", "pill", "含视觉"));
+    item.append(node("span", "meta", metaOf(model)));
+    list.append(item);
+  });
+  const other = node("li", installed().length ? "rule" : ""); other.id = "picker-option-manual"; other.setAttribute("role", "option");
+  other.dataset.value = ""; other.setAttribute("aria-selected", String(!found));
+  other.append(node("span", "name placeholder", "手动输入模型名称…"));
+  list.append(other);
+  setActive(active);
+}
+function setActive(index) {
+  const items = [...$("picker-list").children];
+  active = Math.max(0, Math.min(index, items.length - 1));
+  items.forEach((item, position) => item.classList.toggle("active", position === active));
+  if (!$("picker-list").hidden && items[active]) {
+    $("picker-button").setAttribute("aria-activedescendant", items[active].id);
+    items[active].scrollIntoView({ block: "nearest" });
+  }
+}
+function openPicker(open) {
+  const list = $("picker-list");
+  if (open === !list.hidden) return;
+  list.hidden = !open; $("picker-button").setAttribute("aria-expanded", String(open));
+  if (!open) return $("picker-button").removeAttribute("aria-activedescendant");
+  const selected = [...list.children].findIndex(item => item.getAttribute("aria-selected") === "true");
+  setActive(selected < 0 ? 0 : selected);
+  detect(false);
+}
+function pick(item) {
+  if (!item) return;
+  manual = item.dataset.value === "";
+  if (!manual) $("model").value = models.local = item.dataset.value;
+  openPicker(false); refresh(); save();
+  if (manual) { $("model").focus(); $("model").select(); } else $("picker-button").focus();
+}
+async function detect(announce) {
+  if (!detecting) {
+    lastDetect = Date.now(); $("model-refresh").classList.add("busy");
+    detecting = (async () => {
+      const before = JSON.stringify(config.ollama);
+      try { config.ollama = await api("/api/models"); } catch (error) { return error; }
+      if (JSON.stringify(config.ollama) !== before) refresh();
+    })();
+  }
+  const failure = await detecting;
+  detecting = null; $("model-refresh").classList.remove("busy");
+  if (announce) toast(failure ? "检测失败：" + failure.message
+    : !config.ollama.models ? "没有连上 Ollama（" + config.ollama.host + "）" : "检测到 " + installed().length + " 个本机模型");
+}
+function renderTip(kind) {
+  const card = $("tip-card"), key = kind + "|" + config.ollama.host + "|" + installed().length + "|" + !!config.ollama.models;
+  if (card.dataset.key === key) return;
+  card.dataset.key = key; card.replaceChildren();
+  const block = (title, ...parts) => {
+    const section = node("section"); section.append(node("b", "", title));
+    for (const part of parts) section.append(typeof part === "string" ? document.createTextNode(part) : part);
+    card.append(section); return section;
+  };
+  const code = text => node("code", "", text);
+  const command = text => {
+    const row = node("div", "tip-cmd"), button = node("button", "btn", "复制"); button.type = "button";
+    button.onclick = async () => { try { await navigator.clipboard.writeText(text); toast("已复制：" + text); } catch { toast("复制失败，请手动选择文本"); } };
+    row.append(code(text), button); return row;
+  };
+  if (kind === "local") {
+    block("列表从哪里来", "每次打开页面、展开列表或点刷新按钮时，向本机 Ollama 服务 ", code(config.ollama.host),
+          " 查询已安装的模型，与终端里 ", code("ollama list"), " 的结果一致。" + (config.ollama.host_from_env ? "地址来自环境变量 OLLAMA_HOST。" : "要连接其他地址，启动界面前设置环境变量 OLLAMA_HOST。"));
+    block("添加其他模型", "在终端下载后，回到这里点刷新按钮即可选择：", command("ollama pull " + (["qwen3:8b", "qwen3.5:9b", "gemma3:4b"].find(name => !installed().some(model => model.name === name)) || "<模型名>")),
+          "模型名可在 ollama.com/library 查到。还没下载的模型也可以选“手动输入模型名称”直接填写。");
+    block("默认选哪个", "当前默认是 ", code(config.models.local), "，来自" + config.local_model_source + "。你在这里选过的模型会被浏览器记住。");
+    block("怎么挑", "16 GB 内存的 Mac 建议用 5–6 GB 左右的纯文本模型。量化位数越高（Q4 高于 Q3）译文越稳，占用也越大；带“含视觉”标记的模型翻译时会自动换成去掉视觉模块的副本。");
+  } else if (kind === "openai") {
+    block("填什么", "填写 OpenAI 模型 ID，或远程 vLLM 部署的模型名。接口地址从 OPENAI_BASE_URL 或本机配置读取。");
+    block("默认选哪个", "留空或保持 ", code(config.models.openai), " 时使用默认模型；设置环境变量 OPENAI_MODEL 可以更换默认值。");
+    block("接口地址", "默认调用 OpenAI 官方接口。远程 vLLM 请把 OPENAI_BASE_URL 设置为兼容 OpenAI 协议的服务地址。");
+  } else {
+    block("填什么", "OpenRouter 上的模型 ID，格式为 ", code("厂商/模型名"), "，例如 ", code("deepseek/deepseek-chat"), "。可在 openrouter.ai/models 查到全部可用模型。");
+    block("默认选哪个", "留空或保持 ", code(config.models.openrouter), " 时使用默认模型；设置环境变量 OPENROUTER_MODEL 可以更换默认值。");
+    block("费用", "按所选模型在 OpenRouter 的价格，从对应账户的额度中扣除。");
+  }
+}
+function switchEngine() {
+  const kind = engine();
+  if (kind !== "chatgpt") $("model").value = models[kind] || "";
+  manual = false; refresh(); save();
+  if (kind === "local") detect(false);
+}
+
+/* run panel */
+function minutes(seconds) { return Math.floor(seconds / 60) + ":" + String(seconds % 60).padStart(2, "0"); }
+function paint(job) {
+  $("run").hidden = dismissed;
+  $("run-paper").textContent = job.paper;
+  $("run-time").textContent = minutes(job.seconds);
+  const labels = { running: ["进行中", "live"], done: ["已完成", "good"], failed: ["失败", "bad"], cancelled: ["已取消", "warn"] };
+  $("run-status").textContent = labels[job.status][0];
+  $("run-status").className = "pill " + labels[job.status][1];
+  const log = $("log"), pinned = log.scrollTop + log.clientHeight >= log.scrollHeight - 24;
+  for (const line of job.lines) {
+    STAGES.forEach((pattern, index) => { if (pattern.test(line) && index > stage) stage = index; });
+    const count = line.match(/^翻译 (\d+)\/(\d+) 块 · 请求 (\d+) · 缓存 (\d+)/);
+    if (count) {
+      $("progress").hidden = false;
+      $("bar").style.width = (100 * count[1] / count[2]).toFixed(1) + "%";
+      $("progress-text").textContent = `已译 ${count[1]} / ${count[2]} 个文本块 · 模型请求 ${count[3]} 次 · 命中缓存 ${count[4]} 次`;
+    }
+    log.append(line + "\n");
+  }
+  if (pinned) log.scrollTop = log.scrollHeight;
+  const finished = job.status === "done";
+  [...$("steps").children].forEach((item, index) =>
+    item.className = finished || index < stage ? "done" : index === stage ? "now" : "");
+  $("steps").className = "steps" + (job.status === "failed" || job.status === "cancelled" ? " stopped" : "");
+  if (stage !== 3 || job.status !== "running") $("progress").hidden = stage < 3 || $("progress-text").textContent === "";
+  $("queue-note").hidden = true;
+  $("cancel").hidden = job.status !== "running";
+  $("dismiss").hidden = job.status === "running";
+  const result = $("result");
+  if (job.status === "running") result.hidden = true;
+  else if (result.hidden) {
+    result.hidden = false; result.replaceChildren();
+    const text = (value, cls) => { const p = document.createElement("p"); p.textContent = value; if (cls) p.className = cls; result.append(p); };
+    const actions = document.createElement("div"); actions.className = "actions";
+    const button = (label, path, reveal, primary) => { const b = document.createElement("button"); b.type = "button"; b.className = "btn" + (primary ? " primary" : ""); b.textContent = label; b.onclick = () => open(path, reveal); actions.append(b); };
+    if (job.status === "done" && job.pdf) {
+      result.className = "banner good";
+      text("中文 PDF 已保存，译文语义和版式仍建议人工复核。"); text(job.pdf, "path");
+      button("打开 PDF", job.pdf, false, true); button("在 Finder 中显示", job.pdf, true);
+      if (job.zip) button("显示源码 ZIP", job.zip, true);
+      if (job.report) button("验收报告", job.report, false);
+      const reminder = log.textContent.split("\n").find(line => line.startsWith("Zotero 提醒："));
+      if (reminder) {
+        text(reminder);
+        const b = document.createElement("button"); b.type = "button"; b.className = "btn"; b.textContent = "覆盖 Zotero 旧译本";
+        b.onclick = async () => { b.disabled = true; b.textContent = "正在覆盖…";
+          try { const done = await api("/api/zotero-replace", { path: job.pdf }); b.textContent = "已覆盖"; toast(`新译文已挂到 Zotero，${done.replaced} 个旧译本移入废纸篓`); }
+          catch (error) { b.disabled = false; b.textContent = "覆盖 Zotero 旧译本"; toast(error.message); } };
+        actions.append(b);
+      }
+    } else if (job.status === "cancelled") {
+      result.className = "banner info"; text("任务已取消。已通过校验的译文留在缓存中，用相同保存位置重试可以直接复用。");
+    } else {
+      result.className = "banner bad";
+      const error = [...log.textContent.trim().split("\n")].reverse().find(line => line.startsWith("错误：")) || log.textContent.trim().split("\n").pop() || "任务异常退出";
+      text(error.replace(/^错误：/, ""));
+      const file = error.match(/(?:日志|报告)：(\/.+)$/);
+      if (file) button("在 Finder 中显示日志", file[1].trim(), true);
+      button("打开保存位置", job.output, false);
+    }
+    if (actions.children.length) result.append(actions);
+    loadRecent();
+  }
+}
+async function poll() {
+  clearTimeout(timer);
+  try {
+    const job = await api("/api/job?since=" + cursor);
+    if (job.status === "idle") { running = false; refresh(); return; }
+    cursor = job.next; running = job.status === "running";
+    paint(job); refresh();
+    if (running) timer = setTimeout(poll, 800);
+  } catch (error) {
+    $("run-status").textContent = "连接中断"; $("run-status").className = "pill bad";
+    timer = setTimeout(poll, 2500);
+  }
+}
+function resetRun() { cursor = 0; stage = -1; dismissed = false; $("log").textContent = ""; $("result").hidden = true; $("progress").hidden = true; $("progress-text").textContent = ""; $("bar").style.width = "0"; }
+async function open(path, reveal) { try { await api("/api/open", { path, reveal }); } catch (error) { toast(error.message); } }
+async function loadRecent() {
+  let files = [];
+  try { files = (await api("/api/recent", { output: $("output").value.trim() })).files; } catch {}
+  const list = $("recent"); list.replaceChildren();
+  if (!files.length) { const li = document.createElement("li"); li.className = "empty"; li.textContent = "保存位置中还没有译文。"; list.append(li); return; }
+  for (const file of files) {
+    const li = document.createElement("li"), name = document.createElement("span"), meta = document.createElement("span");
+    name.className = "name"; name.textContent = file.name; name.title = file.path;
+    meta.className = "meta"; meta.textContent = new Date(file.modified * 1000).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) + " · " + (file.size / 1048576).toFixed(1) + " MB";
+    const show = document.createElement("button"), view = document.createElement("button");
+    view.type = show.type = "button"; view.className = show.className = "btn";
+    view.textContent = "打开"; view.onclick = () => open(file.path, false);
+    show.textContent = "显示"; show.title = "在 Finder 中显示"; show.onclick = () => open(file.path, true);
+    li.append(name, meta, view, show); list.append(li);
+  }
+}
+
+/* wiring */
+$("form").addEventListener("submit", async event => {
+  event.preventDefault();
+  if ($("go").disabled) return;
+  resetRun(); running = true; refresh();
+  try { await api("/api/start", collect()); $("api-key").value = ""; window.scrollTo({ top: 0, behavior: "smooth" }); poll(); }
+  catch (error) { running = false; refresh(); toast(error.message); poll(); }
+});
+$("cancel").onclick = async () => { $("cancel").disabled = true; try { await api("/api/cancel", {}); } finally { $("cancel").disabled = false; poll(); } };
+$("dismiss").onclick = () => { dismissed = true; $("run").hidden = true; };
+$("copy").onclick = async () => { try { await navigator.clipboard.writeText($("command").textContent); toast("命令已复制"); } catch { toast("复制失败，请手动选择文本"); } };
+$("open-output").onclick = () => open($("output").value.trim(), false);
+document.querySelectorAll("[data-pick]").forEach(button => button.onclick = async () => {
+  const input = $(button.dataset.pick);
+  try { const { path } = await api("/api/pick-folder", { current: input.value.trim() }); if (path) { input.value = path; input.dispatchEvent(new Event("change", { bubbles: true })); } }
+  catch (error) { toast(error.message); }
+});
+document.querySelectorAll("input[name=engine]").forEach(radio => radio.addEventListener("change", switchEngine));
+$("picker-button").addEventListener("click", () => openPicker($("picker-list").hidden));
+$("picker-button").addEventListener("keydown", event => {
+  const list = $("picker-list"), count = list.children.length, key = event.key;
+  if (list.hidden) { if (key === "ArrowDown" || key === "ArrowUp") { event.preventDefault(); openPicker(true); } return; }
+  if (key === "ArrowDown") setActive(active + 1);
+  else if (key === "ArrowUp") setActive(active - 1);
+  else if (key === "Home") setActive(0);
+  else if (key === "End") setActive(count - 1);
+  else if (key === "Enter" || key === " ") pick(list.children[active]);
+  else if (key === "Escape" || key === "Tab") { openPicker(false); if (key === "Tab") return; }
+  else return;
+  event.preventDefault();
+});
+$("picker-list").addEventListener("click", event => pick(event.target.closest("li")));
+$("picker-list").addEventListener("mousemove", event => { const item = event.target.closest("li"); if (item) setActive([...$("picker-list").children].indexOf(item)); });
+document.addEventListener("mousedown", event => { if (!$("picker").contains(event.target)) openPicker(false); });
+$("model-refresh").addEventListener("click", () => detect(true));
+$("model-help").addEventListener("keydown", event => { if (event.key === "Escape") event.target.blur(); });
+window.addEventListener("focus", () => { if (config && engine() === "local" && Date.now() - lastDetect > 5000) detect(false); });
+$("model").addEventListener("input", () => { if (engine() !== "chatgpt") models[engine()] = $("model").value.trim(); });
+document.addEventListener("input", () => { refresh(); save(); });
+$("output").addEventListener("change", loadRecent);
+$("advanced").addEventListener("toggle", save);
+
+(async function boot() {
+  try { config = await api("/api/config"); }
+  catch (error) { toast("无法连接本机服务：" + error.message); return; }
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem("arxiv-translate-ui") || "{}"); } catch {}
+  models = Object.assign({}, config.models, saved.models);
+  $("output").value = config.output; $("queue").value = config.queue;
+  for (const id of TEXT) if (id !== "model" && saved[id] !== undefined && saved[id] !== "") $(id).value = saved[id];
+  if (saved.jobs) $("jobs").value = saved.jobs;
+  for (const flag of FLAGS) if (typeof saved[flag] === "boolean") $(flag).checked = saved[flag];
+  $("advanced").open = !!saved.advanced;
+  const savedEngine = ["openrouter", "openai", "local"].includes(saved.engine) ? saved.engine : config.engine;
+  $("engine-" + (savedEngine || "openrouter")).checked = true;
+  $("model").value = models[engine()] || "";
+  $("font-list").replaceChildren(...config.fonts.map(name => new Option(name)));
+  const tools = [];
+  if (!config.tools.tectonic && !config.tools.texlive) tools.push("未找到 Tectonic 或 TeX Live");
+  if (!config.tools.pdftoppm) tools.push("未找到 pdftoppm");
+  if (config.config_problem) tools.push(config.config_problem);
+  $("tools").innerHTML = ""; for (const text of tools) { const pill = document.createElement("span"); pill.className = "pill bad"; pill.textContent = text; $("tools").append(pill); }
+  if (!config.tools.texlive) { $("texlive").checked = false; $("texlive").disabled = true; $("texlive-note").textContent = "本机未找到 pdflatex 和 xelatex"; }
+  refresh(); loadRecent(); poll();
+})();
+</script>
+</body>
+</html>

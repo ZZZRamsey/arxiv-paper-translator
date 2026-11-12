@@ -21,10 +21,10 @@ from pypdf.errors import PdfReadError
 from .source import digest, extract, fetch, lock_version, normalize, validate_pdf
 from .sandbox import command_for, detect_engine, find_executable
 from .navigation import HOOK, build_with_returns
-from .translate import (DEFAULT_MODEL, LOCAL_HOST, LOCAL_MODEL, Translator,
+from .translate import (DEFAULT_MODEL, LOCAL_HOST, LOCAL_MODEL, OPENAI_ENDPOINT, Translator,
                         bilingual_title, title_content)
 from .verify import check_titles, direct_links, inspect_pdf, render_hashes, verify_bibliography
-from .zotero import attach_pdf as attach_to_zotero
+from .zotero import ZoteroDuplicate, attach_pdf as attach_to_zotero
 from .settings import local_settings
 from .ollama import ensure_server, text_only
 
@@ -303,7 +303,8 @@ def run(args, key):
     if args.local and args.max_requests:
         ensure_server(args.local, args.jobs)
     translator = Translator(key, args.model, output / ".translation-cache", args.max_requests,
-                            local=args.local, chatgpt=args.chatgpt)
+                            local=args.local, chatgpt=args.chatgpt,
+                            openai=args.openai_base_url)
     if args.local and args.max_requests:
         translator.serve_model = text_only(args.local, args.model)
     print("正在根据标题和摘要提取论文简称", flush=True)
@@ -352,8 +353,19 @@ def run(args, key):
     print(f"英文基线编译：{relative_root}", flush=True)
     requires_pdftex = detect_engine(build_source, build_source / relative_root) == "pdflatex"
     baseline_engine = "pdflatex" if args.texlive or requires_pdftex else "tectonic"
-    baseline, baseline_pages = build(build_source / relative_root, work / "baseline",
-                                     work / "baseline.log", build_source, baseline_engine)
+    try:
+        baseline, baseline_pages = build(build_source / relative_root, work / "baseline",
+                                         work / "baseline.log", build_source, baseline_engine)
+    except ValueError:
+        # Some templates load pdfTeX-only packages without declaring it (e.g. axessibility).
+        if baseline_engine != "tectonic" or not (find_executable("pdflatex")
+                                                 and find_executable("xelatex")):
+            raise
+        print("Tectonic 无法编译英文基线，改用本机 TeX Live（PDFLaTeX + XeLaTeX）重试", flush=True)
+        args.texlive, baseline_engine = True, "pdflatex"
+        shutil.rmtree(work / "baseline", ignore_errors=True)
+        baseline, baseline_pages = build(build_source / relative_root, work / "baseline",
+                                         work / "baseline.log", build_source, baseline_engine)
     download_and_baseline_seconds = round(time.monotonic() - started, 3)
 
     translated = work / "translated-source"
@@ -504,21 +516,33 @@ def run(args, key):
     if getattr(args, "zotero", False):
         paper_id = re.sub(r"v\d+$", "", identifier)
         print("正在查找对应的 Zotero 条目并上传译文 PDF", flush=True)
-        attachment_key = attach_to_zotero(destination, paper_id, lookup["title"])
-        print(f"Zotero 附件已保存：{attachment_key}", flush=True)
+        try:
+            attachment_key, replaced = attach_to_zotero(
+                destination, paper_id, lookup["title"], getattr(args, "zotero_replace", False))
+        except ZoteroDuplicate as duplicate:
+            print(f"Zotero 提醒：{duplicate}", flush=True)
+        except (RuntimeError, OSError, requests.RequestException) as error:
+            # The translation itself is finished and saved; only the upload is missing.
+            print(f"Zotero 提醒：译文 PDF 已保存，但未能挂到 Zotero（{error}）", flush=True)
+        else:
+            suffix = f"，{replaced} 个旧译本已移入 Zotero 废纸篓" if replaced else ""
+            print(f"Zotero 附件已保存：{attachment_key}{suffix}", flush=True)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="使用当前 ChatGPT 会话、OpenRouter 或 Ollama 翻译 arXiv LaTeX 源码")
+    parser = argparse.ArgumentParser(description="使用 OpenAI、OpenRouter、当前 ChatGPT 会话或 Ollama 翻译 arXiv LaTeX 源码")
     parser.add_argument("paper", help="arXiv 编号或 abs/pdf URL")
     backends = parser.add_mutually_exclusive_group()
     backends.add_argument("--chatgpt", type=Path, metavar="DIR",
                           help="由当前 ChatGPT 会话通过 DIR 读取请求并回写译文")
+    backends.add_argument("--openai", action="store_true",
+                          help="调用 OpenAI API 或 OpenAI 兼容的远程 vLLM 接口")
     backends.add_argument("--local", action="store_true",
                         help="用本机 Ollama 模型翻译，不需要 API key，译文不出本机")
     parser.add_argument("--no-review", action="store_true",
                         help="本地模式下跳过逐段复核，耗时约减半，误译略多")
     parser.add_argument("--model", help=f"模型 ID；本地模式默认 {LOCAL_MODEL}")
+    parser.add_argument("--api-key", help="本次请求使用的 API key，优先级高于环境变量和本机配置")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--original-layout", action="store_true", help="沿用原文标题版式、行号及引用样式")
     parser.add_argument("--texlive", action="store_true", help="使用本机 TeX Live 的 PDFLaTeX 和 XeLaTeX 编译原稿与译稿")
@@ -532,10 +556,13 @@ def main():
     parser.add_argument("--save-source", action="store_true", help="额外保存 LaTeX 源码 ZIP")
     parser.add_argument("--zotero", action="store_true",
                         help="翻译完成后，通过 Zotero 本机 API 自动挂到对应论文条目")
+    parser.add_argument("--zotero-replace", action="store_true",
+                        help="条目下已有中文译本附件时，挂上新译文并把旧译本移入 Zotero 废纸篓")
     parser.add_argument("--strict", action="store_true", help="人工复核未完成时保留工作产物，禁止发布")
     parser.add_argument("--public-defaults", action="store_true", help="忽略本机固定配置")
     args = parser.parse_args()
     try:
+        args.zotero = args.zotero or args.zotero_replace
         if args.max_requests < 0:
             raise ValueError("--max-requests 不能小于 0")
         config = {} if args.public_defaults else local_settings()
@@ -550,11 +577,27 @@ def main():
             if overlay:
                 args.tex_overlay = Path(overlay)
         local = args.local or config.get("local") is True
+        openai = args.openai or config.get("openai") is True
+        if args.chatgpt and openai:
+            raise ValueError("--chatgpt 与 --openai 不能同时使用")
         if args.chatgpt:
             args.local = None
+            args.openai_base_url = None
             args.model = args.model or "chatgpt-current-session"
             args.jobs = args.jobs or 4
             key = ""
+        elif openai:
+            args.local = None
+            args.openai_base_url = (os.getenv("OPENAI_BASE_URL")
+                                    or config.get("openai_base_url")
+                                    or OPENAI_ENDPOINT)
+            args.model = (args.model or os.getenv("OPENAI_MODEL")
+                          or config.get("openai_model") or "gpt-4o-mini")
+            args.jobs = args.jobs or 4
+            key = args.api_key or os.getenv("OPENAI_API_KEY") or config.get("openai_api_key") or ""
+            official = args.openai_base_url.startswith(("https://api.openai.com/", "https://api.openai.com"))
+            if official and not key and args.max_requests:
+                raise ValueError("请设置 OPENAI_API_KEY 或在本机配置中填写 openai_api_key")
         elif local:
             host = os.getenv("OLLAMA_HOST") or LOCAL_HOST
             args.local = host if "://" in host else "http://" + host
@@ -564,9 +607,10 @@ def main():
             key = ""
         else:
             args.local = None
+            args.openai_base_url = None
             args.model = args.model or os.getenv("OPENROUTER_MODEL") or DEFAULT_MODEL
             args.jobs = args.jobs or 4
-            key = os.getenv("OPENROUTER_API_KEY") or config.get("api_key")
+            key = args.api_key or os.getenv("OPENROUTER_API_KEY") or config.get("api_key")
             if not key and args.max_requests and sys.stdin.isatty():
                 key = getpass.getpass("OpenRouter API key: ")
             if not key and args.max_requests:

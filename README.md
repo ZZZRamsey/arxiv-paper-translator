@@ -45,6 +45,24 @@ python -m pip install .
 OPENROUTER_API_KEY="你的 API Key" .venv/bin/python -m paper_translate 2511.20785v3 --output ./output
 ~~~
 
+使用 OpenAI API 或 OpenAI 兼容的远程 vLLM：
+
+~~~bash
+OPENAI_API_KEY="你的 API Key" .venv/bin/python -m paper_translate 2511.20785v3 --openai --model gpt-4o-mini --output ./output
+~~~
+
+默认接口是 `https://api.openai.com/v1/chat/completions`。远程 vLLM 可设置 `OPENAI_BASE_URL`，例如 `http://127.0.0.1:8000/v1`，并用 `OPENAI_MODEL` 指定服务端模型名。API key 也可以写入 `~/.config/arxiv-paper-translator/local.json` 的 `openai_api_key`，接口地址和模型分别使用 `openai_base_url`、`openai_model`。vLLM 不要求 key 时可以留空。
+
+### 图形界面
+
+不想记参数时，可以在浏览器里操作。下面的命令会在本机 `127.0.0.1:8765` 启动界面并自动打开浏览器：
+
+~~~bash
+.venv/bin/python -m paper_translate.web
+~~~
+
+重新 `pip install .` 后也可以直接运行 `arxiv-translate-ui`。界面里可以粘贴 arXiv 编号或链接，切换 OpenRouter、OpenAI API、Ollama 三种翻译引擎，选择保存位置和各项开关，并查看实时进度与日志。界面只是命令行的一层表单，页面下方会显示等价的 `arxiv-translate` 命令。服务只监听本机，同一时间运行一个翻译任务；`--port` 可换端口，`--no-browser` 不自动打开浏览器。
+
 ### 2. 翻译一篇论文
 
 下面三种写法指向同一篇论文，任选一种运行。
@@ -58,12 +76,12 @@ arxiv-translate https://arxiv.org/pdf/2503.09516
 翻译完成后，可用 `--zotero` 自动在本机 Zotero 中按 arXiv 编号查找论文条目，并把译文 PDF 保存为该条目的子附件：
 
 ~~~bash
-arxiv-translate 2511.20785 --chatgpt ./chatgpt-requests --zotero
+arxiv-translate 2511.20785 --openai --zotero
 ~~~
 
 该功能使用 Zotero 本机 Local API，不使用 Zotero Web API。首次使用前，在 Zotero 的“设置 → 高级”中启用“允许其他应用在本机与 Zotero 通信”，并在 Zotero 10 的授权对话框中允许 `arXiv Paper Translator` 写入。Zotero 9 只支持本机 API 读取，无法自动保存附件，需要升级到支持本机写入的版本。程序按 arXiv 编号匹配条目，匹配到零个或多个条目时会停止，避免把译文挂到错误的论文下。Zotero 中的普通文件同步仍按其现有设置执行。
 
-首次交互运行时，终端会提示输入 OpenRouter API key，输入内容不会回显。批处理可由运行环境提供 `OPENROUTER_API_KEY`。翻译请求会将待译文本发送给 OpenRouter，并使用对应账户的额度。
+首次交互运行时，终端会提示输入 OpenRouter API key，输入内容不会回显。批处理可由运行环境提供 `OPENROUTER_API_KEY` 或 `OPENAI_API_KEY`。翻译请求会按所选后端发送到 OpenRouter、OpenAI 或 OpenAI 兼容的 vLLM 服务。
 
 ### 3. 改用本地模型（可选）
 
@@ -102,7 +120,9 @@ arxiv-translate 2511.20785v3 --chatgpt ./translation-queue --original-layout --t
 | `--output DIR` | 指定输出目录，默认 `./output` |
 | `--save-source` | 在 PDF 之外保存可重建的 LaTeX 源码 ZIP |
 | `--local` | 用本机 Ollama 模型翻译，不调用 OpenRouter |
-| `--model ID` | 选择 OpenRouter 模型，优先于 `OPENROUTER_MODEL`。默认 [DeepSeek V3](https://openrouter.ai/deepseek/deepseek-chat)（`deepseek/deepseek-chat`）。本地模式下为 Ollama 模型名，默认 `qwen3.5:9b` |
+| `--openai` | 调用 OpenAI API 或 OpenAI 兼容的 vLLM 接口 |
+| `--api-key KEY` | 本次请求使用的 API key，优先于环境变量和本机配置 |
+| `--model ID` | 选择当前后端的模型。OpenRouter 优先使用 `OPENROUTER_MODEL`，OpenAI 优先使用 `OPENAI_MODEL`，本地模式下为 Ollama 模型名 |
 | `--jobs N` | 并发数，范围 1–8，默认 4 |
 | `--no-review` | 本地模式下跳过逐段复核 |
 | `--max-requests N` | 本次模型请求上限，含重试，默认 500。设为 0 时只复用译文缓存 |

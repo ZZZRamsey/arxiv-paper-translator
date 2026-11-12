@@ -107,7 +107,7 @@ input:focus-visible, select:focus-visible { outline: none; border-color: var(--a
 @media (prefers-reduced-motion: reduce) { .icon-btn.busy svg { animation: none; } }
 @media (max-width: 560px) { .picker-list .meta { display: none; } }
 
-.seg { display: grid; grid-template-columns: repeat(3, 1fr); background: var(--sunken); border-radius: 9px; padding: 3px; gap: 3px; }
+.seg { display: grid; grid-template-columns: repeat(4, 1fr); background: var(--sunken); border-radius: 9px; padding: 3px; gap: 3px; }
 .seg label { position: relative; text-align: center; padding: 7px 6px; border-radius: 7px; cursor: pointer; color: var(--muted); line-height: 1.25; }
 .seg label small { display: block; font-size: 11.5px; color: var(--faint); }
 .seg input { position: absolute; opacity: 0; inset: 0; cursor: pointer; }
@@ -226,6 +226,7 @@ details[open] > summary::before { transform: rotate(90deg); }
           <label><input type="radio" name="engine" id="engine-openrouter" value="openrouter">OpenRouter<small>云端 API</small></label>
           <label><input type="radio" name="engine" id="engine-local" value="local">Ollama<small>本机，不出网</small></label>
           <label><input type="radio" name="engine" id="engine-openai" value="openai">OpenAI API<small>兼容远程 vLLM</small></label>
+          <label><input type="radio" name="engine" id="engine-chatgpt" value="chatgpt">ChatGPT<small>当前会话队列</small></label>
         </div>
         <p id="engine-note" class="note"></p>
       </div>
@@ -358,6 +359,7 @@ function collect() {
                  font: $("font").value.trim(), root: $("root").value.trim(), tex_overlay: $("tex_overlay").value.trim() };
   for (const flag of FLAGS) form[flag] = $(flag).checked;
   form.zotero_replace = form.zotero && form.zotero_replace;
+  if (kind === "chatgpt") form.queue = $("queue").value.trim();
   if (kind === "openrouter" || kind === "openai") form.api_key = $("api-key").value;
   return form;
 }
@@ -365,6 +367,7 @@ function commandLine(form) {
   const parts = ["arxiv-translate", form.paper || "<arXiv 编号>", "--output", form.output || "<目录>"];
   if (form.engine === "local") { parts.push("--local"); if (!form.review) parts.push("--no-review"); }
   if (form.engine === "openai") parts.push("--openai");
+  if (form.engine === "chatgpt") parts.push("--chatgpt", form.queue || "<目录>");
   if (form.model && form.engine !== "chatgpt" && config && form.model !== config.models[form.engine]) parts.push("--model", form.model);
   if (form.zotero_replace) form.zotero = false;
   for (const flag of ["original_layout", "texlive", "save_source", "zotero", "zotero_replace", "strict"]) if (form[flag]) parts.push("--" + flag.replace("_", "-"));
@@ -387,7 +390,7 @@ function refresh() {
   const kind = engine(), paper = parsePaper($("paper").value), hint = $("hint");
   $("row-model").hidden = false;
   $("row-key").hidden = kind !== "openrouter" && kind !== "openai";
-  $("row-queue").hidden = true;
+  $("row-queue").hidden = kind !== "chatgpt";
   $("row-review").hidden = kind !== "local";
   $("row-zotero-replace").hidden = !$("zotero").checked;
   hint.className = "hint" + (paper && paper.error ? " bad" : "");
@@ -410,7 +413,7 @@ function refresh() {
     $("engine-note").textContent = kind === "openrouter" ? "待译文本发送到 OpenRouter，使用对应账户的额度。"
       : kind === "openai" ? "待译文本发送到 OpenAI API 或配置的 OpenAI 兼容 vLLM 接口。"
       : local ? (config.ollama.models ? "Ollama 已在 " + config.ollama.host + " 运行，待译文本不会离开本机。" : "未检测到正在运行的 Ollama，开始翻译时会尝试自动启动。")
-      : "";
+      : "无需 API key；任务会一直等待，直到会话把译文回写到队列目录。";
     $("model-note").textContent = !local ? ""
       : !config.ollama.models ? "没有连上 Ollama，暂时无法列出已安装的模型。可以先手动填写名称，或启动 Ollama 后点右侧按钮重新检测。"
       : !names.length ? "Ollama 里还没有任何模型，请先运行 ollama pull 下载一个，再点右侧按钮重新检测。"
@@ -557,7 +560,7 @@ function paint(job) {
     item.className = finished || index < stage ? "done" : index === stage ? "now" : "");
   $("steps").className = "steps" + (job.status === "failed" || job.status === "cancelled" ? " stopped" : "");
   if (stage !== 3 || job.status !== "running") $("progress").hidden = stage < 3 || $("progress-text").textContent === "";
-  $("queue-note").hidden = true;
+  $("queue-note").hidden = !(job.status === "running" && / --chatgpt /.test(job.command) && stage <= 3);
   $("cancel").hidden = job.status !== "running";
   $("dismiss").hidden = job.status === "running";
   const result = $("result");
@@ -681,7 +684,7 @@ $("advanced").addEventListener("toggle", save);
   if (saved.jobs) $("jobs").value = saved.jobs;
   for (const flag of FLAGS) if (typeof saved[flag] === "boolean") $(flag).checked = saved[flag];
   $("advanced").open = !!saved.advanced;
-  const savedEngine = ["openrouter", "openai", "local"].includes(saved.engine) ? saved.engine : config.engine;
+  const savedEngine = ["openrouter", "openai", "local", "chatgpt"].includes(saved.engine) ? saved.engine : config.engine;
   $("engine-" + (savedEngine || "openrouter")).checked = true;
   $("model").value = models[engine()] || "";
   $("font-list").replaceChildren(...config.fonts.map(name => new Option(name)));

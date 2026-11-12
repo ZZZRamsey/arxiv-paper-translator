@@ -158,7 +158,7 @@ def start(form):
     paper = str(form.get("paper", "")).strip()
     normalize(paper)
     engine = form.get("engine")
-    if engine not in ("openrouter", "openai", "local"):
+    if engine not in ("openrouter", "openai", "local", "chatgpt"):
         raise ValueError("请选择翻译引擎")
     output = folder(form.get("output"), "保存位置")
     arguments = [paper, "--output", str(output)]
@@ -175,6 +175,8 @@ def start(form):
         configured = describe()
         if not key and not configured["openai_has_key"] and configured["openai_base_url"].startswith("https://api.openai.com"):
             raise ValueError("OpenAI API 需要 API key，请填写后重试，或在本机配置中设置 openai_api_key")
+    elif engine == "chatgpt":
+        arguments += ["--chatgpt", str(folder(form.get("queue"), "ChatGPT 队列目录"))]
     else:
         key = str(form.get("api_key") or "").strip()
         if key:

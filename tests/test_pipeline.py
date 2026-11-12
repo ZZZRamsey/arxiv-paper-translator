@@ -6,7 +6,7 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import call, patch
+from unittest.mock import Mock, call, patch
 
 from paper_translate.cli import enable_xetex_translation, main, output_paths, patch_pdftex_styles
 from paper_translate.sandbox import detect_engine
@@ -57,6 +57,21 @@ class SourceTests(unittest.TestCase):
 
 
 class TranslationTests(unittest.TestCase):
+    def test_openai_backend_uses_openai_compatible_endpoint(self):
+        response = Mock(ok=True)
+        response.json.return_value = {
+            "choices": [{"message": {"content": "中文译文"}}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 2},
+        }
+        with tempfile.TemporaryDirectory() as temp, patch("requests.Session.post", return_value=response) as post:
+            model = Translator("test-key", "served-model", Path(temp),
+                               openai="http://vllm.example/v1")
+            self.assertEqual(model.complete("Translate this."), "中文译文")
+        post.assert_called_once()
+        self.assertEqual(post.call_args.args[0], "http://vllm.example/v1/chat/completions")
+        self.assertEqual(post.call_args.kwargs["headers"]["Authorization"], "Bearer test-key")
+        self.assertEqual(post.call_args.kwargs["json"]["model"], "served-model")
+
     def test_current_session_reads_answer_without_http(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

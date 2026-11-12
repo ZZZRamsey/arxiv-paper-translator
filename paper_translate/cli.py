@@ -21,7 +21,7 @@ from pypdf.errors import PdfReadError
 from .source import digest, extract, fetch, lock_version, normalize, validate_pdf
 from .sandbox import command_for, detect_engine, find_executable
 from .navigation import HOOK, build_with_returns
-from .translate import (DEFAULT_MODEL, LOCAL_HOST, LOCAL_MODEL, Translator,
+from .translate import (DEFAULT_MODEL, LOCAL_HOST, LOCAL_MODEL, OPENAI_ENDPOINT, Translator,
                         bilingual_title, title_content)
 from .verify import check_titles, direct_links, inspect_pdf, render_hashes, verify_bibliography
 from .zotero import ZoteroDuplicate, attach_pdf as attach_to_zotero
@@ -348,7 +348,8 @@ def run(args, key):
     if args.local and args.max_requests:
         ensure_server(args.local, args.jobs)
     translator = Translator(key, args.model, output / ".translation-cache", args.max_requests,
-                            local=args.local, chatgpt=args.chatgpt)
+                            local=args.local, chatgpt=args.chatgpt,
+                            openai=args.openai_base_url)
     if args.local and args.max_requests:
         translator.serve_model = text_only(args.local, args.model)
     print("正在根据标题和摘要提取论文简称", flush=True)
@@ -615,16 +616,19 @@ def run(args, key):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="使用当前 ChatGPT 会话、OpenRouter 或 Ollama 翻译 arXiv LaTeX 源码")
+    parser = argparse.ArgumentParser(description="使用 OpenAI、OpenRouter、当前 ChatGPT 会话或 Ollama 翻译 arXiv LaTeX 源码")
     parser.add_argument("paper", help="arXiv 编号或 abs/pdf URL")
     backends = parser.add_mutually_exclusive_group()
     backends.add_argument("--chatgpt", type=Path, metavar="DIR",
                           help="由当前 ChatGPT 会话通过 DIR 读取请求并回写译文")
+    backends.add_argument("--openai", action="store_true",
+                          help="调用 OpenAI API 或 OpenAI 兼容的远程 vLLM 接口")
     backends.add_argument("--local", action="store_true",
                         help="用本机 Ollama 模型翻译，不需要 API key，译文不出本机")
     parser.add_argument("--no-review", action="store_true",
                         help="本地模式下跳过逐段复核，耗时约减半，误译略多")
     parser.add_argument("--model", help=f"模型 ID；本地模式默认 {LOCAL_MODEL}")
+    parser.add_argument("--api-key", help="本次请求使用的 API key，优先级高于环境变量和本机配置")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--original-layout", action="store_true", help="沿用原文标题版式、行号及引用样式")
     parser.add_argument("--texlive", action="store_true", help="使用本机 TeX Live 的 PDFLaTeX 和 XeLaTeX 编译原稿与译稿")
@@ -662,15 +666,33 @@ def main():
             if overlay:
                 args.tex_overlay = Path(overlay)
         local = args.local or config.get("local") is True
+        # An explicit --local wins over an "openai" default in the config file.
+        openai = args.openai or (config.get("openai") is True and not args.local)
+        if args.chatgpt and args.openai:
+            raise ValueError("--chatgpt 与 --openai 不能同时使用")
+        base_url = (os.getenv("OPENAI_BASE_URL") or config.get("openai_base_url")
+                    or OPENAI_ENDPOINT)
+        official = base_url.startswith("https://api.openai.com")
         if args.max_requests is None:
-            # A cloud budget guards the bill; local and session backends cost nothing per
-            # request, and a reviewed 250-paragraph paper alone needs more than 500.
-            args.max_requests = 5000 if local or args.chatgpt else 500
+            # A cloud budget guards the bill; local, session and self-hosted backends cost
+            # nothing per request, and a reviewed 250-paragraph paper alone needs more than 500.
+            free = args.chatgpt or (not official if openai else local)
+            args.max_requests = 5000 if free else 500
         if args.chatgpt:
             args.local = None
+            args.openai_base_url = None
             args.model = args.model or "chatgpt-current-session"
             args.jobs = args.jobs or 4
             key = ""
+        elif openai:
+            args.local = None
+            args.openai_base_url = base_url
+            args.model = (args.model or os.getenv("OPENAI_MODEL")
+                          or config.get("openai_model") or "gpt-4o-mini")
+            args.jobs = args.jobs or 4
+            key = args.api_key or os.getenv("OPENAI_API_KEY") or config.get("openai_api_key") or ""
+            if official and not key and args.max_requests:
+                raise ValueError("请设置 OPENAI_API_KEY 或在本机配置中填写 openai_api_key")
         elif local:
             host = os.getenv("OLLAMA_HOST") or LOCAL_HOST
             args.local = host if "://" in host else "http://" + host
@@ -680,9 +702,10 @@ def main():
             key = ""
         else:
             args.local = None
+            args.openai_base_url = None
             args.model = args.model or os.getenv("OPENROUTER_MODEL") or DEFAULT_MODEL
             args.jobs = args.jobs or 4
-            key = os.getenv("OPENROUTER_API_KEY") or config.get("api_key")
+            key = args.api_key or os.getenv("OPENROUTER_API_KEY") or config.get("api_key")
             if not key and args.max_requests and sys.stdin.isatty():
                 key = getpass.getpass("OpenRouter API key: ")
             if not key and args.max_requests:

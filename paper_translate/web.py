@@ -23,7 +23,7 @@ from .runtime import FROZEN, cli_command, default_output, support_dir
 from .sandbox import find_executable
 from .settings import CONFIG, local_settings, update_settings
 from .source import normalize
-from .translate import DEFAULT_MODEL, LOCAL_HOST, LOCAL_MODEL
+from .translate import DEFAULT_MODEL, LOCAL_HOST, LOCAL_MODEL, OPENAI_ENDPOINT
 from .zotero import attach_pdf as attach_to_zotero
 
 PAGE = Path(__file__).with_name("web.html")
@@ -177,14 +177,21 @@ def ui_state(update=None):
 def describe():
     config, problem = settings()
     pdftoppm = config.get("pdftoppm") or find_executable("pdftoppm")
+    openai_url = os.getenv("OPENAI_BASE_URL") or config.get("openai_base_url") or OPENAI_ENDPOINT
     return {
         "output": str(Path(config.get("output") or default_output()).expanduser().resolve()),
         "environment": environment(config),
         "ui_state": ui_state(),
         "task": State.task.snapshot() if State.task else None,
-        "engine": "local" if config.get("local") is True else "openrouter",
+        "engine": "local" if config.get("local") is True else "openai" if config.get("openai") is True else "openrouter",
         "has_key": bool(os.getenv("OPENROUTER_API_KEY") or config.get("api_key")),
+        "openai_has_key": bool(os.getenv("OPENAI_API_KEY") or config.get("openai_api_key")),
+        "openai_base_url": openai_url,
+        "openai_official": openai_url.startswith("https://api.openai.com"),
+        "openai_from_env": {"base_url": bool(os.getenv("OPENAI_BASE_URL")),
+                            "model": bool(os.getenv("OPENAI_MODEL"))},
         "models": {"openrouter": os.getenv("OPENROUTER_MODEL") or DEFAULT_MODEL,
+                   "openai": os.getenv("OPENAI_MODEL") or config.get("openai_model") or "gpt-4o-mini",
                    "local": os.getenv("OLLAMA_MODEL") or config.get("local_model") or LOCAL_MODEL},
         "local_model_source": ("环境变量 OLLAMA_MODEL" if os.getenv("OLLAMA_MODEL")
                                else "本机配置 local.json 的 local_model" if config.get("local_model")
@@ -212,7 +219,7 @@ def start(form):
     paper = str(form.get("paper", "")).strip()
     normalize(paper)
     engine = form.get("engine")
-    if engine not in ("openrouter", "local", "chatgpt"):
+    if engine not in ("openrouter", "openai", "local", "chatgpt"):
         raise ValueError("请选择翻译引擎")
     output = folder(form.get("output"), "保存位置")
     arguments = [paper, "--output", str(output)]
@@ -221,6 +228,15 @@ def start(form):
         arguments.append("--local")
         if not form.get("review", True):
             arguments.append("--no-review")
+    elif engine == "openai":
+        arguments.append("--openai")
+        key = str(form.get("api_key") or "").strip()
+        if key:
+            environment["OPENAI_API_KEY"] = key
+        configured = describe()
+        if (not key and not configured["openai_has_key"] and configured["openai_official"]
+                and form.get("max_requests") != 0):
+            raise ValueError("OpenAI API 需要 API key，请填写后重试，或在“环境与默认设置”里保存")
     elif engine == "chatgpt":
         arguments += ["--chatgpt", str(folder(form.get("queue"), "ChatGPT 队列目录"))]
     else:
@@ -272,10 +288,20 @@ def save_settings(form):
         changes["api_key"] = str(form["api_key"] or "").strip() or None
     if "output" in form:
         changes["output"] = str(folder(form["output"], "保存位置"))
+    if "openai_api_key" in form:
+        changes["openai_api_key"] = str(form["openai_api_key"] or "").strip() or None
+    if "openai_base_url" in form:
+        url = str(form["openai_base_url"] or "").strip().rstrip("/")
+        if url and not re.fullmatch(r"https?://[^\s/?#]+(/[^\s?#]*)?", url):
+            raise ValueError("接口地址需要以 http:// 或 https:// 开头，例如 http://127.0.0.1:8000/v1")
+        changes["openai_base_url"] = url or None
+    if "openai_model" in form:
+        changes["openai_model"] = str(form["openai_model"] or "").strip() or None
     if "engine" in form:
-        if form["engine"] not in ("openrouter", "local"):
-            raise ValueError("默认引擎只能是 OpenRouter 或 Ollama")
+        if form["engine"] not in ("openrouter", "openai", "local"):
+            raise ValueError("默认引擎只能是 OpenRouter、OpenAI API 或 Ollama")
         changes["local"] = form["engine"] == "local"
+        changes["openai"] = True if form["engine"] == "openai" else None
     if "local_model" in form:
         changes["local_model"] = str(form["local_model"] or "").strip() or None
     update_settings(changes)

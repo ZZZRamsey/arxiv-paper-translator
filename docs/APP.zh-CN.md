@@ -19,7 +19,7 @@ app 内置了 Python 运行环境、Tectonic 和 Poppler（pdftoppm），不需�
 | 项目 | 是否必须 | 说明 |
 | --- | --- | --- |
 | TeX 基础宏包 | 自动 | 首次编译时联网下载到 `~/Library/Caches/TectonicProject.Tectonic`（约 60 MB）。首次通常需要 5–15 分钟，取决于网络。之后缺少的宏包在“自动下载缺失的 TeX 宏包”打开时按需下载。论文源码本身始终在断网的沙箱里编译。 |
-| 翻译引擎 | 二选一 | **OpenRouter**：在准备面板里填 API key。**Ollama**：安装 Ollama 并 `ollama pull qwen3.5:9b`，待译文本不出本机。 |
+| 翻译引擎 | 任选其一 | **OpenRouter**：在准备面板里填 API key。**OpenAI API / 兼容接口**：在准备面板里填 OpenAI 的 API key；连接自建的 vLLM 等兼容服务时，再填接口地址（如 `http://127.0.0.1:8000/v1`）和服务端模型名，服务不要求 key 时可留空。**Ollama**：安装 Ollama 并 `ollama pull qwen3.5:9b`，待译文本不出本机。 |
 | TeX Live | 可选 | 多数模板（NeurIPS、ICLR、ICML、CVPR 等）用内置的 Tectonic 就能编译。少数模板只支持 PDFLaTeX（例如 ACL 系列），遇到时程序会自动改用本机 TeX Live；没装时会给出提示。安装：`brew install --cask mactex-no-gui`。 |
 | Zotero | 可选 | 打开“保存到 Zotero”后把译文挂到对应条目。 |
 

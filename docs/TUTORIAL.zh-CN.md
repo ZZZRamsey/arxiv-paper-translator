@@ -206,7 +206,8 @@ output/.translation-cache/<缓存文件>.txt
 | --- | --- |
 | `--chatgpt DIR` | 通过目录文件使用当前 ChatGPT 会话 |
 | `--local` | 使用本机 Ollama |
-| `--model NAME` | 指定 OpenRouter 或 Ollama 模型 |
+| `--openai` | 使用 OpenAI API 或 OpenAI 兼容接口（如远程 vLLM） |
+| `--model NAME` | 指定 OpenRouter、OpenAI 或 Ollama 模型 |
 | `--original-layout` | 沿用原始模板的版式和标题样式 |
 | `--texlive` | 使用 PDFLaTeX、XeLaTeX 和 BibTeX |
 | `--no-review` | 本地模型跳过译文复核 |

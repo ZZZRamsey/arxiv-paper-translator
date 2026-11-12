@@ -1,4 +1,5 @@
 import json
+import os
 import stat
 import tempfile
 import unittest
@@ -35,6 +36,26 @@ class PackagingTests(unittest.TestCase):
         self.assertTrue(all("bad name" not in call.args[0] and "input" not in call.args[0]
                             for call in run.call_args_list))
         self.assertEqual(len(run.call_args_list), 2)  # one probe, one package load
+
+    def test_setup_panel_saves_openai_endpoint_and_default_engine(self):
+        from paper_translate import web
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "local.json"
+            clean = {k: v for k, v in os.environ.items() if not k.startswith("OPENAI_")}
+            with patch.object(settings, "CONFIG", path), patch.dict(os.environ, clean, clear=True), \
+                    patch.object(web, "describe", lambda: {}):
+                web.save_settings({"engine": "openai", "openai_api_key": " k ",
+                                   "openai_base_url": "http://127.0.0.1:8000/v1/", "openai_model": "served"})
+                saved = settings.local_settings()
+                self.assertEqual((saved["openai"], saved["local"], saved["openai_api_key"]), (True, False, "k"))
+                self.assertEqual(saved["openai_base_url"], "http://127.0.0.1:8000/v1")
+                web.save_settings({"engine": "local", "openai_base_url": ""})
+                saved = settings.local_settings()
+                self.assertNotIn("openai", saved)
+                self.assertNotIn("openai_base_url", saved)
+                self.assertTrue(saved["local"])
+                with self.assertRaises(ValueError):
+                    web.save_settings({"openai_base_url": "ftp://example"})
 
     def test_settings_update_keeps_other_keys_and_private_mode(self):
         with tempfile.TemporaryDirectory() as temp:

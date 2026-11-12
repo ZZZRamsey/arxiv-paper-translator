@@ -17,6 +17,7 @@ import requests
 
 DEFAULT_MODEL = "deepseek/deepseek-chat"
 ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
+OPENAI_ENDPOINT = "https://api.openai.com/v1/chat/completions"
 # Local backend: Ollama's native chat API, which (unlike its OpenAI-compatible
 # route) lets each request set the context window and disable thinking.
 LOCAL_MODEL = "qwen3.5:9b"
@@ -492,7 +493,8 @@ def parse_short_name(raw, title, abstract):
 
 
 class Translator:
-    def __init__(self, key, model, cache, max_requests=500, local=None, chatgpt=None):
+    def __init__(self, key, model, cache, max_requests=500, local=None,
+                 chatgpt=None, openai=None):
         """`local` is an Ollama base URL; when set, nothing leaves this machine."""
         self.key = key
         self.model = model
@@ -502,6 +504,12 @@ class Translator:
         if chatgpt:
             chatgpt.mkdir(mode=0o700, parents=True, exist_ok=True)
             self.provider = "ChatGPT"
+        self.openai = bool(openai)
+        if self.openai:
+            self.endpoint = openai.rstrip("/")
+            if not self.endpoint.endswith("/chat/completions"):
+                self.endpoint += "/chat/completions"
+            self.provider = "OpenAI"
         self.is_local = bool(local)
         self.serve_model = model
         self.review = False
@@ -557,6 +565,8 @@ class Translator:
                 response.unlink(missing_ok=True)
         if self.is_local:
             return self.complete_local(messages)
+        if self.openai:
+            return self.complete_openai(messages)
         response = self.local.session.post(
             self.endpoint, headers={"Authorization": f"Bearer {self.key}"},
             json={
@@ -587,6 +597,45 @@ class Translator:
         value = choice["message"].get("content")
         if choice.get("finish_reason") != "stop" or not isinstance(value, str):
             raise ValueError("OpenRouter 输出未正常结束")
+        return value.strip()
+
+    def complete_openai(self, messages):
+        headers = {"Content-Type": "application/json"}
+        if self.key:
+            headers["Authorization"] = f"Bearer {self.key}"
+        try:
+            response = self.local.session.post(
+                self.endpoint, headers=headers,
+                json={"model": self.model, "temperature": 0.1,
+                      "max_tokens": 6000, "messages": messages},
+                timeout=(10, 1800), allow_redirects=False,
+            )
+        except requests.ConnectionError as error:
+            raise RuntimeError(f"无法连接 OpenAI 兼容接口：{self.endpoint}") from error
+        if not response.ok:
+            if response.status_code in (408, 429, 500, 502, 503, 504):
+                if response.status_code == 429:
+                    try:
+                        wait = float(response.headers.get("Retry-After", "2"))
+                    except ValueError:
+                        wait = 2
+                    with self.lock:
+                        self.cooldown = max(self.cooldown, time.monotonic() + min(60, max(1, wait)))
+                raise OSError(f"OpenAI 兼容接口 HTTP {response.status_code}")
+            detail = response.text[:300].replace("\n", " ")
+            raise RuntimeError(f"OpenAI 兼容接口 HTTP {response.status_code}：{detail}")
+        try:
+            body = response.json()
+            value = body["choices"][0]["message"].get("content")
+        except (ValueError, KeyError, IndexError, TypeError) as error:
+            raise OSError("OpenAI 兼容接口响应中没有译文") from error
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("OpenAI 兼容接口返回了空译文")
+        with self.lock:
+            for field in ("prompt_tokens", "completion_tokens", "cost"):
+                amount = (body.get("usage") or {}).get(field)
+                if isinstance(amount, (float, int)):
+                    self.usage[field] = self.usage.get(field, 0) + amount
         return value.strip()
 
     def complete_local(self, messages):

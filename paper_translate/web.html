@@ -107,10 +107,11 @@ input:focus-visible, select:focus-visible { outline: none; border-color: var(--a
 @media (prefers-reduced-motion: reduce) { .icon-btn.busy svg { animation: none; } }
 @media (max-width: 560px) { .picker-list .meta { display: none; } }
 
-.seg { display: grid; grid-template-columns: repeat(3, 1fr); background: var(--sunken); border-radius: 9px; padding: 3px; gap: 3px; }
+.seg { display: grid; grid-template-columns: repeat(4, 1fr); background: var(--sunken); border-radius: 9px; padding: 3px; gap: 3px; }
 .seg label { position: relative; text-align: center; padding: 7px 6px; border-radius: 7px; cursor: pointer; color: var(--muted); line-height: 1.25; }
 .seg label small { display: block; font-size: 11.5px; color: var(--faint); }
 .seg input { position: absolute; opacity: 0; inset: 0; cursor: pointer; }
+@media (max-width: 560px) { .seg { grid-template-columns: repeat(2, 1fr); } }
 .seg label:has(input:checked) { background: var(--surface); color: var(--fg); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.12); }
 .seg label:has(input:focus-visible) { outline: 2px solid var(--accent); }
 
@@ -248,6 +249,7 @@ details[open] > summary::before { transform: rotate(90deg); }
         <div class="seg" role="radiogroup" aria-labelledby="engine-label">
           <label><input type="radio" name="engine" id="engine-openrouter" value="openrouter">OpenRouter<small>云端 API</small></label>
           <label><input type="radio" name="engine" id="engine-local" value="local">Ollama<small>本机，不出网</small></label>
+          <label><input type="radio" name="engine" id="engine-openai" value="openai">OpenAI API<small>官方或兼容接口</small></label>
           <label><input type="radio" name="engine" id="engine-chatgpt" value="chatgpt">ChatGPT<small>当前会话队列</small></label>
         </div>
         <p id="engine-note" class="note"></p>
@@ -305,7 +307,7 @@ details[open] > summary::before { transform: rotate(90deg); }
         </div>
         <div class="row">
           <label for="max_requests">请求上限</label>
-          <input id="max_requests" type="number" min="0" step="1" placeholder="自动：云端 500，本地 5000">
+          <input id="max_requests" type="number" min="0" step="1" placeholder="自动：云端 500，本地和自建 5000">
           <p class="note">本次模型请求总数，含重试。留空按引擎自动选择；填 0 时只复用译文缓存。</p>
         </div>
         <div class="row">
@@ -383,12 +385,13 @@ function collect() {
   for (const flag of FLAGS) form[flag] = $(flag).checked;
   form.zotero_replace = form.zotero && form.zotero_replace;
   if (kind === "chatgpt") form.queue = $("queue").value.trim();
-  if (kind === "openrouter") form.api_key = $("api-key").value;
+  if (kind === "openrouter" || kind === "openai") form.api_key = $("api-key").value;
   return form;
 }
 function commandLine(form) {
   const parts = ["arxiv-translate", form.paper || "<arXiv 编号>", "--output", form.output || "<目录>"];
   if (form.engine === "local") { parts.push("--local"); if (!form.review) parts.push("--no-review"); }
+  if (form.engine === "openai") parts.push("--openai");
   if (form.engine === "chatgpt") parts.push("--chatgpt", form.queue || "<目录>");
   if (form.model && form.engine !== "chatgpt" && config && form.model !== config.models[form.engine]) parts.push("--model", form.model);
   if (form.zotero_replace) form.zotero = false;
@@ -412,7 +415,7 @@ function save() {
 function refresh() {
   const kind = engine(), paper = parsePaper($("paper").value), hint = $("hint");
   $("row-model").hidden = kind === "chatgpt";
-  $("row-key").hidden = kind !== "openrouter";
+  $("row-key").hidden = kind !== "openrouter" && kind !== "openai";
   $("row-queue").hidden = kind !== "chatgpt";
   $("row-review").hidden = kind !== "local";
   $("row-zotero-replace").hidden = !$("zotero").checked;
@@ -434,6 +437,7 @@ function refresh() {
     $("model").hidden = !!found;
     $("model").placeholder = local ? "输入模型名称，例如 qwen3:8b" : "";
     $("engine-note").textContent = kind === "openrouter" ? "待译文本发送到 OpenRouter，使用对应账户的额度。"
+      : kind === "openai" ? (config.openai_official ? "待译文本发送到 OpenAI 官方接口，使用对应账户的额度。" : "待译文本发送到你配置的 OpenAI 兼容接口：" + config.openai_base_url)
       : local ? (config.ollama.models ? "Ollama 已在 " + config.ollama.host + " 运行，待译文本不会离开本机。" : "未检测到正在运行的 Ollama，开始翻译时会尝试自动启动。")
       : "无需 API key；任务会一直等待，直到会话把译文回写到队列目录。";
     $("model-note").textContent = !local ? ""
@@ -443,10 +447,11 @@ function refresh() {
       : value && !names.includes(value + ":latest") ? "本机还没有 " + value + "，请先运行 ollama pull " + value + "。"
       : "";
     renderPicker(found); renderTip(kind);
-    $("model-list").replaceChildren(...(kind === "local" ? [] : [config.models.openrouter, "deepseek/deepseek-chat"])
+    $("model-list").replaceChildren(...(kind === "local" ? [] : [config.models.openrouter, config.models.openai, "deepseek/deepseek-chat"])
       .filter((name, index, all) => all.indexOf(name) === index).map(name => new Option(name)));
-    $("key-note").textContent = config.has_key ? "已从环境变量或本机配置读取 key，留空即可。此处填写的 key 只用于本次任务，不会保存。" : "此处填写的 key 只用于本次任务；想长期保存，请在右上角“环境与默认设置”里填写。";
-    $("api-key").placeholder = config.has_key ? "已配置，留空使用" : "sk-or-…";
+    const hasKey = kind === "openai" ? config.openai_has_key : config.has_key;
+    $("key-note").textContent = hasKey ? "已从环境变量或本机配置读取 key，留空即可。此处填写的 key 只用于本次任务，不会保存。" : "此处填写的 key 只用于本次任务；想长期保存，请在右上角“环境与默认设置”里填写。";
+    $("api-key").placeholder = hasKey ? "已配置，留空使用" : kind === "openai" ? (config.openai_official ? "sk-…" : "自建服务不要求 key 时可留空") : "sk-or-…";
   }
   $("command").textContent = commandLine(collect());
 }
@@ -538,6 +543,11 @@ function renderTip(kind) {
           "模型名可在 ollama.com/library 查到。还没下载的模型也可以选“手动输入模型名称”直接填写。");
     block("默认选哪个", "当前默认是 ", code(config.models.local), "，来自" + config.local_model_source + "。你在这里选过的模型会被浏览器记住。");
     block("怎么挑", "16 GB 内存的 Mac 建议用 5–6 GB 左右的纯文本模型。量化位数越高（Q4 高于 Q3）译文越稳，占用也越大；带“含视觉”标记的模型翻译时会自动换成去掉视觉模块的副本。");
+  } else if (kind === "openai") {
+    block("填什么", "OpenAI 的模型 ID，例如 ", code("gpt-4o-mini"), "；连接 vLLM 等兼容服务时，填服务端部署的模型名。");
+    block("默认选哪个", "当前默认是 ", code(config.models.openai), "。可在右上角“环境与默认设置”里更换" + (config.openai_from_env.model ? "；现在的值来自环境变量 OPENAI_MODEL。" : "。"));
+    block("接口地址", "当前是 ", code(config.openai_base_url), "。要连接自建的 vLLM 或其他兼容 OpenAI 协议的服务，在“环境与默认设置”里改接口地址" + (config.openai_from_env.base_url ? "；现在的值来自环境变量 OPENAI_BASE_URL，优先于保存的设置。" : "。"));
+    block("费用", config.openai_official ? "按所选模型的 OpenAI 价格，从对应账户扣除。" : "自建服务不按次计费，请求上限默认放宽到 5000。");
   } else {
     block("填什么", "OpenRouter 上的模型 ID，格式为 ", code("厂商/模型名"), "，例如 ", code("deepseek/deepseek-chat"), "。可在 openrouter.ai/models 查到全部可用模型。");
     block("默认选哪个", "留空或保持 ", code(config.models.openrouter), " 时使用默认模型；设置环境变量 OPENROUTER_MODEL 可以更换默认值。");
@@ -553,8 +563,9 @@ function switchEngine() {
 
 /* setup panel */
 let taskTimer = null, setupSeen = false;
+const openaiReady = () => config.openai_has_key || !config.openai_official;
 const needsSetup = () => { const env = config.environment;
-  return !(env.tectonic || env.texlive) || !env.pdftoppm || (!config.has_key && !installed().length); };
+  return !(env.tectonic || env.texlive) || !env.pdftoppm || (!config.has_key && !openaiReady() && !installed().length); };
 function renderSetup() {
   const env = config.environment, box = $("checks"); box.replaceChildren();
   const copyable = text => { const c = node("code", "", text); c.title = "点击复制"; c.style.cursor = "copy";
@@ -582,19 +593,34 @@ function renderSetup() {
   else check("todo", "PDF 渲染（Poppler）", "核验译文 PDF 需要 pdftoppm：", copyable("brew install poppler"));
   if (!env.font) check("todo", "中文字体", "没有找到系统自带的宋体（Songti SC）。请在“高级选项 → 中文字体”里换成本机已安装的中文字体。");
   const key = node("input"); key.type = "password"; key.placeholder = config.has_key ? "已保存，填写新 key 可替换" : "sk-or-…"; key.autocomplete = "off"; key.setAttribute("aria-label", "OpenRouter API key");
-  check(config.has_key ? "ok" : installed().length ? "optional" : "todo", "云端引擎 · OpenRouter",
+  check(config.has_key ? "ok" : installed().length || openaiReady() ? "optional" : "todo", "云端引擎 · OpenRouter",
     config.has_key ? "API key 已配置。翻译时待译文本会发送到 OpenRouter。" : "在 openrouter.ai/keys 创建 API key 后填在这里。key 保存在本机配置文件（仅本人可读），不会上传到别处。",
     key, button("保存 key", async () => { if (!key.value.trim()) return toast("请先填写 API key");
       try { config = await api("/api/settings", { api_key: key.value }); key.value = ""; toast("API key 已保存"); renderSetup(); refresh(); } catch (error) { toast(error.message); } }));
+  const okey = node("input"); okey.type = "password"; okey.autocomplete = "off"; okey.setAttribute("aria-label", "OpenAI API key");
+  okey.placeholder = config.openai_has_key ? "API key 已保存，填写新 key 可替换" : config.openai_official ? "API key：sk-…" : "API key（服务不要求时留空）";
+  const ourl = node("input", "path"); ourl.type = "text"; ourl.value = config.openai_official ? "" : config.openai_base_url; ourl.placeholder = "接口地址，留空用 OpenAI 官方；自建如 http://127.0.0.1:8000/v1"; ourl.setAttribute("aria-label", "OpenAI 兼容接口地址"); ourl.spellcheck = false; ourl.style.flex = "1 0 100%";
+  const omodel = node("input"); omodel.type = "text"; omodel.value = config.models.openai; omodel.placeholder = "默认模型，例如 gpt-4o-mini"; omodel.setAttribute("aria-label", "OpenAI 默认模型"); omodel.spellcheck = false;
+  ourl.disabled = config.openai_from_env.base_url; omodel.disabled = config.openai_from_env.model;
+  check(config.openai_has_key ? "ok" : !config.openai_official ? "ok" : "optional", "云端引擎 · OpenAI API / 兼容接口",
+    (config.openai_official ? (config.openai_has_key ? "API key 已配置，使用 OpenAI 官方接口。" : "使用 OpenAI 官方接口需要在 platform.openai.com 创建 API key。也可以填自建 vLLM 等兼容服务的地址。")
+      : "使用兼容接口 " + config.openai_base_url + (config.openai_has_key ? "，API key 已配置。" : "，未设置 API key。"))
+      + (config.openai_from_env.base_url || config.openai_from_env.model ? " 置灰的项来自环境变量，优先于这里的设置。" : " key 保存在本机配置文件（仅本人可读）。"),
+    ourl, okey, omodel, button("保存", async () => {
+      const changes = {}; if (okey.value.trim()) changes.openai_api_key = okey.value;
+      if (!ourl.disabled) changes.openai_base_url = ourl.value; if (!omodel.disabled) changes.openai_model = omodel.value;
+      try { const before = config.models.openai; config = await api("/api/settings", changes); okey.value = "";
+        if (engine() === "openai" && (!models.openai || models.openai === before)) { $("model").value = models.openai = config.models.openai; }
+        toast("OpenAI 接口设置已保存"); renderSetup(); refresh(); } catch (error) { toast(error.message); } }));
   const found = installed();
-  check(found.length ? "ok" : config.has_key ? "optional" : "todo", "本地引擎 · Ollama",
+  check(found.length ? "ok" : config.has_key || openaiReady() ? "optional" : "todo", "本地引擎 · Ollama",
     found.length ? `Ollama 正在运行，已安装 ${found.length} 个模型。待译文本不会离开本机。`
       : config.ollama.models ? "Ollama 正在运行，但还没有模型。在终端下载一个（约 6 GB，建议 16 GB 以上内存）："
       : env.ollama_installed ? "已安装 Ollama 但没有运行。打开 Ollama 后点“重新检查”。" : "不想把论文发到云端时使用。先安装 Ollama，再下载模型：",
     found.length || env.ollama_installed ? null : copyable("brew install --cask ollama-app"),
     found.length ? null : copyable("ollama pull qwen3.5:9b"));
   const select = node("select"); select.setAttribute("aria-label", "默认翻译引擎");
-  select.append(new Option("默认用 OpenRouter（云端）", "openrouter"), new Option("默认用 Ollama（本机）", "local")); select.value = config.engine;
+  select.append(new Option("默认用 OpenRouter（云端）", "openrouter"), new Option("默认用 OpenAI API / 兼容接口", "openai"), new Option("默认用 Ollama（本机）", "local")); select.value = config.engine;
   const out = node("input", "path"); out.type = "text"; out.value = config.output; out.setAttribute("aria-label", "默认保存位置");
   check("ok", "默认设置", "新窗口打开时使用的翻译引擎和译文保存位置。", select, out,
     button("选择…", async () => { try { const { path } = await api("/api/pick-folder", { current: out.value.trim() }); if (path) out.value = path; } catch (error) { toast(error.message); } }),
@@ -770,7 +796,8 @@ $("setup-done").onclick = () => { setupSeen = true; save(); showSetup(false); };
   if (saved.jobs) $("jobs").value = saved.jobs;
   for (const flag of FLAGS) if (typeof saved[flag] === "boolean") $(flag).checked = saved[flag];
   $("advanced").open = !!saved.advanced;
-  $("engine-" + (saved.engine || config.engine)).checked = true;
+  const savedEngine = ["openrouter", "openai", "local", "chatgpt"].includes(saved.engine) ? saved.engine : config.engine;
+  $("engine-" + (savedEngine || "openrouter")).checked = true;
   $("model").value = models[engine()] || "";
   $("font-list").replaceChildren(...config.fonts.map(name => new Option(name)));
   const tools = [];

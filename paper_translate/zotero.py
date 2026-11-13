@@ -25,7 +25,7 @@ class ZoteroLocal:
         self.session.headers.update({
             "Zotero-API-Version": "3",
             "Zotero-Allowed-Request": "1",
-            "User-Agent": "arxiv-paper-translator/1.0",
+            "User-Agent": "arxiv-paper-translator/1.1",
         })
         response = self.session.get(self.base_url + "/", timeout=timeout)
         zotero_version = response.headers.get("X-Zotero-Version", "")

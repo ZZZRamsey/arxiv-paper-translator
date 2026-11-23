@@ -592,7 +592,7 @@ function renderSetup() {
     : "少数论文模板只支持 PDFLaTeX，遇到时需要它。体积较大（约 5 GB），可以等遇到再装：", env.texlive ? null : copyable("brew install --cask mactex-no-gui"));
   if (env.pdftoppm) check("ok", "PDF 渲染（Poppler）", env.app ? "使用 app 内置的 pdftoppm。" : "已找到 pdftoppm。");
   else check("todo", "PDF 渲染（Poppler）", "核验译文 PDF 需要 pdftoppm：", copyable("brew install poppler"));
-  if (!env.font) check("todo", "中文字体", "没有找到系统自带的宋体（Songti SC）。请在“高级选项 → 中文字体”里换成本机已安装的中文字体。");
+  if (!env.font) check("optional", "中文字体", "没有找到系统宋体（Songti SC）。开始翻译时会自动下载约 50 MB 的 Noto Sans CJK SC（OFL 许可）作为替代字体，并显示下载提示。");
   const key = node("input"); key.type = "password"; key.placeholder = config.has_key ? "已保存，填写新 key 可替换" : "sk-or-…"; key.autocomplete = "off"; key.setAttribute("aria-label", "OpenRouter API key");
   check(config.has_key ? "ok" : installed().length || openaiReady() ? "optional" : "todo", "云端引擎 · OpenRouter",
     config.has_key ? "API key 已配置。翻译时待译文本会发送到 OpenRouter。" : "在 openrouter.ai/keys 创建 API key 后填在这里。key 保存在本机配置文件（仅本人可读），不会上传到别处。",

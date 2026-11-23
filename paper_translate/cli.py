@@ -28,6 +28,7 @@ from .zotero import ZoteroDuplicate, attach_pdf as attach_to_zotero
 from .settings import local_settings
 from .runtime import default_output
 from . import texcache
+from .fonts import ensure_cjk_font
 from .ollama import ensure_server, text_only
 
 COMMENT = re.compile(r"(?<!\\)%[^\n]*")
@@ -240,7 +241,7 @@ def xetex_compatible(tex):
 
 
 def configure_chinese(tex, font, preserve_layout=False):
-    if not re.fullmatch(r"[\w .-]+", font):
+    if not Path(font).is_file() and not re.fullmatch(r"[\w .-]+", font):
         raise ValueError("无效的中文字体名称")
     if not preserve_layout:
         tex = re.sub(r"(?m)^([ \t]*)\\linenumbers\b(?:\[[^\]\n]*\])?", r"\1", tex)
@@ -265,7 +266,14 @@ def configure_chinese(tex, font, preserve_layout=False):
         )
     # A single CJK main font avoids option/font-family conflicts in styles that
     # already define their own sans and monospaced font families.
-    preamble = package + f"\\setCJKmainfont{{{font}}}\n"
+    font_path = Path(font)
+    if font_path.is_file():
+        font_name = font_path.name.replace("\\", "/")
+        font_dir = font_path.parent.as_posix().replace("\\", "/") + "/"
+        font_option = f"[Path={font_dir}]{{{font_name}}}"
+    else:
+        font_option = "{" + font + "}"
+    preamble = package + f"\\setCJKmainfont{font_option}\n"
     return re.sub(r"(?m)^[ \t]*\\begin\{document\}", lambda m: preamble + m[0], tex, count=1)
 
 
@@ -352,6 +360,7 @@ def run(args, key):
         raise ValueError("隔离编译需要 macOS，并安装 Tectonic 或 BasicTeX/MacTeX")
     global FETCH_PACKAGES
     FETCH_PACKAGES = bool(getattr(args, "fetch_packages", False))
+    args.font = ensure_cjk_font(args.font)
     renderer = args.pdftoppm or find_executable("pdftoppm")
     if not renderer or not os.access(renderer, os.X_OK):
         raise ValueError("需要可运行的 Poppler pdftoppm，可用 --pdftoppm 指定")

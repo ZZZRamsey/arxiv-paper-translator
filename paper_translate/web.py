@@ -28,6 +28,7 @@ from .settings import CONFIG, local_settings, update_settings
 from .source import normalize, lock_version, fetch, extract
 from .cli import root_candidates, locate_root
 from .translate import DEFAULT_MODEL, LOCAL_HOST, LOCAL_MODEL, OPENAI_ENDPOINT
+from .fonts import FONT_FILE
 from .zotero import attach_pdf as attach_to_zotero
 
 PAGE = Path(__file__).with_name("web.html")
@@ -154,7 +155,8 @@ def environment(config):
     return {
         "tectonic": bool(tectonic), "tex_cache": texcache.CACHE.is_dir(), "texlive": texlive,
         "pdftoppm": bool(pdftoppm and os.access(pdftoppm, os.X_OK)),
-        "font": Path("/System/Library/Fonts/Supplemental/Songti.ttc").exists(),
+        "font": Path("/System/Library/Fonts/Supplemental/Songti.ttc").exists() or FONT_FILE.is_file(),
+        "font_fallback": str(FONT_FILE) if FONT_FILE.is_file() else None,
         "ollama_installed": bool(find_executable("ollama") or Path("/Applications/Ollama.app").exists()),
         "zotero_installed": Path("/Applications/Zotero.app").exists(),
         "homebrew": bool(find_executable("brew")),

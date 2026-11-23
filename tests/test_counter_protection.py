@@ -46,3 +46,9 @@ class CounterProtectionTests(unittest.TestCase):
         messages = []
         self.assertEqual(ensure_cjk_font('Definitely Missing Font', messages.append), str(FONT_FILE))
         self.assertTrue(any('未找到' in message for message in messages))
+
+    def test_unicode_compilation_uses_path_font_and_disables_microtype_tracking(self):
+        from paper_translate.cli import configure_chinese
+        result = configure_chinese("\\documentclass{article}\n\\begin{document}测试\\end{document}", 'Songti SC')
+        self.assertIn('Extension=.ttc,FontIndex=0', result)
+        self.assertIn('\\microtypesetup{protrusion=false,expansion=false,tracking=false}', result)

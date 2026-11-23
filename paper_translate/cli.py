@@ -141,11 +141,36 @@ def build_once(root, target, log, source=None, engine=None):
         working_directory = root.parent
     else:
         raise ValueError(f"不支持的 TeX 编译引擎：{engine}")
+    if engine == "xelatex":
+        # xdvipdfmx resolves image and TFM paths from its output directory.
+        for item in source.iterdir():
+            link = target / item.name
+            if link.exists() or link.is_symlink():
+                continue
+            try:
+                link.symlink_to(item, target_is_directory=item.is_dir())
+            except OSError:
+                pass
+        font_dir = source / "NVIDIA-Sans-Font-TTF"
+        if font_dir.is_dir():
+            tfm_dir = target / "fonts" / "tfm"
+            tfm_dir.mkdir(parents=True, exist_ok=True)
+            for tfm in font_dir.glob("*.tfm"):
+                link = tfm_dir / tfm.name
+                if not link.exists():
+                    try:
+                        link.symlink_to(tfm)
+                    except OSError:
+                        pass
     with log.open("w", encoding="utf-8") as stream:
         passes = 1 if engine == "tectonic" else 3
         result = None
         for attempt in range(passes):
             command, environment = command_for(source, target, engine_args, engine=engine)
+            if engine == "xelatex":
+                environment["TEXMFHOME"] = str(target)
+                environment["TEXMFVAR"] = str(target / "texmf-var")
+                environment["TEXMFCONFIG"] = str(target / "texmf-config")
             stream.write(f"\n=== {engine} pass {attempt + 1} ===\n")
             result = subprocess.run(command, cwd=working_directory, stdout=stream,
                                     stderr=subprocess.STDOUT, timeout=360, env=environment)
@@ -163,6 +188,10 @@ def build_once(root, target, log, source=None, engine=None):
                 if result.returncode == 0:
                     for attempt in range(2):
                         command, environment = command_for(source, target, engine_args, engine=engine)
+                        if engine == "xelatex":
+                            environment["TEXMFHOME"] = str(target)
+                            environment["TEXMFVAR"] = str(target / "texmf-var")
+                            environment["TEXMFCONFIG"] = str(target / "texmf-config")
                         stream.write(f"\n=== {engine} bibliography pass {attempt + 1} ===\n")
                         result = subprocess.run(command, cwd=working_directory, stdout=stream,
                                                 stderr=subprocess.STDOUT, timeout=360, env=environment)
@@ -272,8 +301,14 @@ def configure_chinese(tex, font, preserve_layout=False):
         font_dir = font_path.parent.as_posix().replace("\\", "/") + "/"
         font_option = f"[Path={font_dir}]{{{font_name}}}"
     else:
-        font_option = "{" + font + "}"
-    preamble = package + f"\\setCJKmainfont{font_option}\n"
+        font_specs = {
+            "Songti SC": r"[Path=/System/Library/Fonts/Supplemental/,Extension=.ttc,FontIndex=0]{Songti}",
+            "STSong": r"[Path=/System/Library/Fonts/Supplemental/,Extension=.ttc,FontIndex=0]{Songti}",
+            "Heiti SC": r"[Path=/System/Library/Fonts/Supplemental/,Extension=.ttc,FontIndex=0]{STHeiti}",
+            "Kaiti SC": r"[Path=/System/Library/Fonts/Supplemental/,Extension=.ttc,FontIndex=0]{Kaiti}",
+        }
+        font_option = font_specs.get(font, "{" + font + "}")
+    preamble = package + f"\\setCJKmainfont{font_option}\n\\microtypesetup{{protrusion=false,expansion=false,tracking=false}}\n"
     return re.sub(r"(?m)^[ \t]*\\begin\{document\}", lambda m: preamble + m[0], tex, count=1)
 
 

@@ -5,6 +5,7 @@ from paper_translate.translate import validate_structure, Translator
 from paper_translate.cli import repair_model_tex
 from paper_translate.translate import OPAQUE, mask
 from paper_translate.fonts import FONT_FILE, ensure_cjk_font
+from paper_translate.zotero import ZoteroLocal
 
 class CounterProtectionTests(unittest.TestCase):
     def test_unbraced_command_definition_is_opaque(self):
@@ -41,6 +42,11 @@ class CounterProtectionTests(unittest.TestCase):
         self.assertFalse(ZoteroLocal._matches({'data': {'itemType': 'note'}}, '2504.14904', ''))
         self.assertFalse(ZoteroLocal._matches({'data': {'itemType': 'note', 'title': '2504.14904'}}, '2504.14904', ''))
         self.assertTrue(ZoteroLocal._matches({'data': {'itemType': 'preprint', 'url': 'https://arxiv.org/abs/2504.14904'}}, '2504.14904', ''))
+
+    def test_zotero_arxiv_match_is_exact(self):
+        self.assertTrue(ZoteroLocal._matches({'data': {'itemType': 'preprint', 'extra': 'arXiv:2605.27365v2'}}, '2605.27365', ''))
+        self.assertFalse(ZoteroLocal._matches({'data': {'itemType': 'preprint', 'extra': 'arXiv:12605.27365'}}, '2605.27365', ''))
+        self.assertFalse(ZoteroLocal._matches({'data': {'itemType': 'preprint', 'title': '2605.27365'}}, '2605.27365', ''))
 
     def test_missing_font_reports_and_uses_downloaded_fallback(self):
         messages = []

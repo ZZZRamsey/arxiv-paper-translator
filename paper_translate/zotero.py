@@ -18,6 +18,9 @@ class ZoteroDuplicate(ZoteroLocalError):
     """The matching item already carries a different translated PDF."""
 
 
+ARXIV_ID = re.compile(r"(?<![0-9.])(?:arXiv\s*:\s*)?(\d{4}\.\d{4,5})(?:v\d+)?(?![0-9])", re.I)
+
+
 class ZoteroLocal:
     def __init__(self, base_url="http://localhost:23119/api", timeout=30):
         self.base_url = base_url.rstrip("/")
@@ -108,8 +111,12 @@ class ZoteroLocal:
         data = item.get("data", {})
         if data.get("itemType") in ("attachment", "note", "annotation") or data.get("deleted"):
             return False
-        text = " ".join(str(data.get(key, "")) for key in ("title", "url", "extra", "DOI"))
-        return arxiv_id.lower() in text.lower() or bool(title.strip() and data.get("title", "").strip() == title.strip())
+        text = " ".join(str(data.get(key, "")) for key in ("url", "extra"))
+        ids = {match.group(1).lower() for match in ARXIV_ID.finditer(text)}
+        wanted = arxiv_id.lower().removeprefix("arxiv:").removesuffix(".pdf")
+        if wanted in ids:
+            return True
+        return bool(title.strip() and data.get("title", "").strip() == title.strip())
 
     def find_parent(self, arxiv_id, title):
         response = self._request("GET", "/users/0/items", params={

@@ -87,8 +87,10 @@ DEFINITIONS = r"(?(DEFINE)(?<brace>\{(?:\\[{}]|[^{}]|(?&brace))*\}))"
 ENV = (r"tabular\*?|tabularx|tabulary|longtable|tblr|table\*?|threeparttable|"
        r"verbatim\*?|Verbatim|CodeVerbatim|lstlisting|minted|tikzpicture|thebibliography|equation\*?|align\*?|"
        r"gather\*?|multline\*?|alignat\*?|displaymath|math|algorithmic")
+COMMAND_DEFINITION = (r"\\(?:newcommand|renewcommand|providecommand|DeclareRobustCommand)\*?\s*"
+                      r"(?:\\[A-Za-z@]+|" + GROUP + r")\s*(?:\[[^\]\n]*\]\s*){0,2}" + GROUP)
 OPAQUE = re.compile(
-    DEFINITIONS + r"(?P<comment>(?<!\\)%[^\n]*)|"
+    DEFINITIONS + COMMAND_DEFINITION + r"|" + r"(?P<comment>(?<!\\)%[^\n]*)|"
     r"(?P<env>\\begin\{(?P<name>" + ENV + r")\}[\s\S]*?\\end\{\g<name>\})|"
     r"\\(?:author|affiliation|institute|address|email|authorrunning|date|"
     r"newcommand|renewcommand|providecommand|DeclareRobustCommand)\*?\s*"
@@ -104,7 +106,7 @@ CAPTION = re.compile(
 IDENTIFIER = (r"\\(?:textit|textbf|emph|textsc|textsf|textrm)\s*\{[A-Za-z0-9.+-]+(?:\\_[A-Za-z0-9.+-]+)+\}|"
               r"(?<![\p{L}\d\\])[A-Za-z0-9]+(?:\\_[A-Za-z0-9]+)+(?![\p{L}\d])")
 MASK = re.compile(
-    DEFINITIONS + r"\\(?:icmlsetsymbol|icmlauthor|icmlaffiliation|icmlcorrespondingauthor|setcounter)\s*" + GROUP + r"\s*" + GROUP + r"|" +
+    DEFINITIONS + COMMAND_DEFINITION + r"|" + r"\\(?:alph|Alph|arabic|roman|Roman|fnsymbol|value)\s*" + GROUP + r"|" + r"\\(?:icmlsetsymbol|icmlauthor|icmlaffiliation|icmlcorrespondingauthor|setcounter)\s*" + GROUP + r"\s*" + GROUP + r"|" +
     r"\\(?:icmlkeywords|raisebox|parbox)\s*" + GROUP + r"|" +
     r"\\(?:vskip|hskip)\s*[-+]?[0-9.]+(?:pt|mm|cm|in|em|ex)\b|" +
     IDENTIFIER + r"|" +
@@ -226,6 +228,20 @@ def plan(tex, root=False, table=False):
             continue
         for index, part in enumerate(BOUNDARY.split(value)):
             yield part, index % 2 == 0 and bool(re.search(r"[A-Za-z]{2}", MASK.sub("", part)))
+
+
+STRUCTURAL = re.compile(DEFINITIONS + COMMAND_DEFINITION + r"|"
+    r"\\(?:alph|Alph|arabic|roman|Roman|fnsymbol|value|newcounter)\s*" + GROUP + r"|"
+    r"\\(?:setcounter|addtocounter)\s*" + GROUP + r"\s*" + GROUP)
+
+
+def validate_structure(original, translated):
+    """Reject changed program identifiers, including results from old caches."""
+    def signature(text):
+        text = re.sub(r"(?<!\\)%[^\n]*", "", text)
+        return collections.Counter(match[0] for match in STRUCTURAL.finditer(text))
+    if signature(original) != signature(translated):
+        raise ValueError("译文改动了 LaTeX 宏定义或计数器，已阻止编译；请重新翻译该段")
 
 
 def mask(text):
@@ -738,6 +754,10 @@ class Translator:
             cached = path.read_text(encoding="utf-8")
         except OSError:
             cached = ""
+        try:
+            validate_structure(source, cached)
+        except ValueError:
+            cached = ""
         if re.search(r"\p{Han}", cached):
             with self.lock:
                 self.hits += 1
@@ -773,6 +793,7 @@ class Translator:
                 if self.review and attempt < 3 and result is not core:
                     restored = self.reviewed(masked, saved, result, core, head, tail) or restored
                 restored = polish(restored)
+                validate_structure(source, restored)
                 self.save(path, restored)
                 return self.with_spacing(text, restored)
             except (requests.RequestException, OSError, ValueError) as error:
@@ -1027,7 +1048,10 @@ class Translator:
             ]
             for path, pieces in plans.items()
         }
-        return {
+        results = {
             path: "".join(texts[part] if active else part for part, active in pieces)
             for path, pieces in plans.items()
         }
+        for path, result in results.items():
+            validate_structure(documents[path][0], result)
+        return results

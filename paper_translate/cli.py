@@ -34,17 +34,26 @@ COMMENT = re.compile(r"(?<!\\)%[^\n]*")
 INPUT = re.compile(r"\\(?:input|include|subfile)(?![A-Za-z@])\s*(?:\{([^{}]+)\}|([^\s%{}\\]+))")
 
 
-def locate_root(source, override=None):
+def root_candidates(source):
+    source = source.resolve()
     candidates = []
     for path in sorted(source.rglob("*.tex")):
         text = COMMENT.sub("", path.read_text(encoding="utf-8-sig", errors="replace"))
         if re.search(r"\\document(?:class|style)\b", text) and r"\begin{document}" in text:
             candidates.append(path)
+    return candidates
+
+
+def locate_root(source, override=None):
+    source = source.resolve()
+    candidates = root_candidates(source)
     if override:
         path = (source / override).resolve()
         if path not in candidates:
             raise ValueError("--root 必须指定源码包内的文档根 TeX")
         return path
+    if source / "main.tex" in candidates:
+        return source / "main.tex"
     readme = source / "00README.json"
     if readme.is_file():
         data = json.loads(readme.read_text(encoding="utf-8"))
@@ -283,6 +292,13 @@ def repair_model_tex(text, original=""):
     navigation-only block, so if it is returned as one quoted string, keep the
     original structural block and translate the prose around it.
     """
+    # Counter names are identifiers, including in cached translations.
+    counters = r"\\(?:alph|Alph|arabic|roman|Roman|fnsymbol|value)\s*\{[^{}]*\}"
+    before, after = list(re.finditer(counters, original)), list(re.finditer(counters, text))
+    if len(before) == len(after):
+        for source, target in reversed(list(zip(before, after))):
+            if source[0].split("{")[0].strip() == target[0].split("{")[0].strip():
+                text = text[:target.start()] + source[0] + text[target.end():]
     marker = '"\\\\newpage\\\\textbackslash{}n'
     if marker in text and original:
         start = text.find(marker)

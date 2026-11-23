@@ -298,7 +298,7 @@ details[open] > summary::before { transform: rotate(90deg); }
       <label class="toggle"><span><b>自动下载缺失的 TeX 宏包</b><small>Tectonic 离线编译缺少宏包时，联网从 Tectonic 宏包库下载后重试；论文源码本身始终在断网的隔离环境中编译</small></span><input type="checkbox" id="fetch_packages" checked></label>
       <label class="toggle" id="row-review"><span><b>逐段复核</b><small>本地模型每段译完再检查一遍；关闭后耗时约减半，误译略多</small></span><input type="checkbox" id="review" checked></label>
       <label class="toggle"><span><b>保存到 Zotero</b><small>完成后按 arXiv 编号匹配本机 Zotero 条目并挂为子附件</small></span><input type="checkbox" id="zotero"></label>
-      <label class="toggle" id="row-zotero-replace"><span><b>覆盖 Zotero 旧译本</b><small>条目下已有中文译本时，挂上新译文并把旧附件移入 Zotero 废纸篓；关闭时只提醒、不重复挂载</small></span><input type="checkbox" id="zotero_replace"></label>
+      <label class="toggle" id="row-zotero-replace"><span><b>覆盖 Zotero 旧译本</b><small>条目下已有中文译本时，挂上新译文并只把旧中文译本移入 Zotero 废纸篓，英文原文保留；关闭时只提醒、不重复挂载</small></span><input type="checkbox" id="zotero_replace"></label>
       <details id="advanced">
         <summary>高级选项</summary>
         <div class="row">
@@ -317,8 +317,9 @@ details[open] > summary::before { transform: rotate(90deg); }
         </div>
         <div class="row">
           <label for="root">根 TeX 文件</label>
-          <input id="root" class="path" type="text" spellcheck="false" placeholder="自动识别">
-          <p class="note">源码包里有多个根文件且无法自动区分时，填写相对路径，如 <code>main.tex</code>。</p>
+          <div class="field"><input id="root" class="path" type="text" spellcheck="false" placeholder="默认 main.tex，其他自动识别"><button id="scan-roots" class="btn" type="button">列出入口</button></div>
+          <select id="root-options" hidden aria-label="选择根 TeX 文件"></select>
+          <p class="note">优先使用源码顶层 main.tex。点击“列出入口”下载并扫描全部候选，可选择其他入口或填写相对路径。</p>
         </div>
         <div class="row">
           <label for="tex_overlay">本地宏包目录</label>
@@ -633,6 +634,24 @@ function renderSetup() {
   $("setup-title").textContent = pending ? "开始前的准备" : "环境与默认设置";
   $("setup-sub").textContent = pending ? "下面几项决定翻译能否顺利完成，带“需要处理”的请先处理。" : "一切就绪，可以开始翻译。";
 }
+$("scan-roots").onclick = async () => {
+  const button = $("scan-roots"), paper = $("paper").value.trim();
+  button.disabled = true; button.textContent = "读取中…";
+  try {
+    const result = await api("/api/roots", { paper });
+    if ($("paper").value.trim() !== paper) return;
+    const select = $("root-options"); select.replaceChildren();
+    select.append(new Option("自动选择" + (result.default ? "（" + result.default + "）" : "（请指定入口）"), ""));
+    for (const path of result.candidates) select.append(new Option(path, path));
+    select.hidden = false;
+    select.value = result.candidates.includes($("root").value) ? $("root").value : result.default || "";
+    $("root").value = select.value; refresh();
+    if (!result.candidates.length) toast("源码包中未找到根 TeX 文件");
+  } catch (error) { toast(error.message); }
+  finally { button.disabled = false; button.textContent = "列出入口"; }
+};
+$("root-options").onchange = () => { $("root").value = $("root-options").value; refresh(); };
+$("paper").addEventListener("input", () => { $("root-options").hidden = true; $("root-options").replaceChildren(); $("root").value = ""; });
 async function pollTask() {
   clearTimeout(taskTimer);
   try { config.task = await api("/api/task"); } catch { taskTimer = setTimeout(pollTask, 2000); return; }

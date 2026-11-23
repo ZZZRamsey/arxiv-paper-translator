@@ -10,6 +10,9 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
+import tarfile
+import zipfile
 import threading
 import time
 import webbrowser
@@ -22,7 +25,8 @@ from . import texcache
 from .runtime import FROZEN, cli_command, default_output, support_dir
 from .sandbox import find_executable
 from .settings import CONFIG, local_settings, update_settings
-from .source import normalize
+from .source import normalize, lock_version, fetch, extract
+from .cli import root_candidates, locate_root
 from .translate import DEFAULT_MODEL, LOCAL_HOST, LOCAL_MODEL, OPENAI_ENDPOINT
 from .zotero import attach_pdf as attach_to_zotero
 
@@ -328,6 +332,27 @@ def replace_in_zotero(path):
     return {"key": key, "replaced": replaced}
 
 
+def discover_roots(paper):
+    version, _ = lock_version(normalize(str(paper)))
+    errors = []
+    for route in ("src", "e-print"):
+        try:
+            data, _ = fetch(route, version)
+            with tempfile.TemporaryDirectory(prefix="arxiv-roots-") as directory:
+                source = Path(directory) / "source"
+                extract(data, source)
+                candidates = [p.relative_to(source).as_posix() for p in root_candidates(source)]
+                try:
+                    default = locate_root(source).relative_to(source).as_posix()
+                except ValueError:
+                    default = None
+                return {"paper": version, "candidates": candidates, "default": default}
+        except (requests.RequestException, OSError, ValueError, EOFError,
+                tarfile.TarError, zipfile.BadZipFile) as error:
+            errors.append(str(error))
+    raise ValueError("无法读取源码入口：" + "；".join(errors))
+
+
 def recent(directory):
     directory = Path(directory).expanduser()
     if not directory.is_dir():
@@ -406,6 +431,8 @@ class Handler(BaseHTTPRequestHandler):
             form = json.loads(self.rfile.read(length) or b"{}")
             if not isinstance(form, dict):
                 raise ValueError("请求格式错误")
+            if self.path == "/api/roots":
+                return self.reply(discover_roots(form.get("paper", "")))
             if self.path == "/api/start":
                 return self.reply(start(form))
             if self.path == "/api/cancel":

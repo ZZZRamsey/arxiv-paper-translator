@@ -3,6 +3,7 @@
 import hashlib
 import json
 import mimetypes
+import re
 from pathlib import Path
 from urllib.parse import quote
 
@@ -105,8 +106,10 @@ class ZoteroLocal:
     @staticmethod
     def _matches(item, arxiv_id, title):
         data = item.get("data", {})
+        if data.get("itemType") in ("attachment", "note", "annotation") or data.get("deleted"):
+            return False
         text = " ".join(str(data.get(key, "")) for key in ("title", "url", "extra", "DOI"))
-        return arxiv_id.lower() in text.lower() or data.get("title", "").strip() == title.strip()
+        return arxiv_id.lower() in text.lower() or bool(title.strip() and data.get("title", "").strip() == title.strip())
 
     def find_parent(self, arxiv_id, title):
         response = self._request("GET", "/users/0/items", params={
@@ -124,7 +127,7 @@ class ZoteroLocal:
     def _is_translation(data):
         """Attachments this tool created: its title suffix or its file naming."""
         return data.get("itemType") == "attachment" and not data.get("deleted") and (
-            str(data.get("title", "")).endswith("中文译本") or "_zh_CN" in str(data.get("filename", "")))
+            str(data.get("title", "")).endswith("中文译本") or re.fullmatch(r".+_zh_CN(?:_.*)?\.pdf", str(data.get("filename", ""))) is not None)
 
     def _trash(self, child):
         """Move an attachment to the Zotero trash, where it stays recoverable."""

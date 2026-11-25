@@ -145,7 +145,7 @@ class TranslationTests(unittest.TestCase):
         translated = "\\documentclass[]{x2lab}\n\\title{具身智能规划 \\\\for 任务}\n\\begin{document}"
         result = bilingual_title(original, translated)
         self.assertIn(r"}\par\vspace{0.4ex}{\Large", result)
-        self.assertNotIn(r"}\[0.4ex]", result)
+        self.assertNotIn(r"}\\[0.4ex]", result)
 
     def test_caption_translates_but_cell_is_opaque(self):
         tex = r"\begin{table}\caption{Results of \textbf{our model}}\begin{tabular}{c}Result\\\end{tabular}\end{table}"

@@ -174,8 +174,14 @@ def bilingual_title(original, translated):
     start, end = title_content(translated)
     if not re.search(r"\p{Han}", translated[start:end]):
         raise ValueError("未检测到中文标题")
+    # ``\\`` is not safe at this boundary for custom classes that render the
+    # title inside a box or a ``twocolumn[...]`` argument.  In those contexts
+    # the group containing the translated title can end while TeX is in
+    # vertical mode, which produces "There's no line here to end" at
+    # ``\\maketitle``.  A paragraph break is valid in both the standard
+    # classes and these title boxes, and keeps the intended visual spacing.
     return (translated[:start] + r"{\large " + translated[start:end].strip()
-            + r"}\\[0.4ex]{\Large "
+            + r"}\par\vspace{0.4ex}{\Large "
             + original[left:right].strip() + "}" + translated[end:])
 
 

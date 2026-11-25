@@ -137,8 +137,15 @@ class TranslationTests(unittest.TestCase):
         original = "\\title[Short]{The \\emph{Original}}\n\\begin{document}"
         translated = "\\title[Short]{中文标题}\n\\begin{document}"
         self.assertEqual(bilingual_title(original, translated),
-                         "\\title[Short]{{\\large 中文标题}\\\\[0.4ex]{\\Large The \\emph{Original}}}"
+                         "\\title[Short]{{\\large 中文标题}\\par\\vspace{0.4ex}{\\Large The \\emph{Original}}}"
                          "\n\\begin{document}")
+
+    def test_bilingual_title_uses_paragraph_separator_for_title_boxes(self):
+        original = "\\documentclass[]{x2lab}\n\\title{Original \\\\for Embodied Intelligence}\n\\begin{document}"
+        translated = "\\documentclass[]{x2lab}\n\\title{具身智能规划 \\\\for 任务}\n\\begin{document}"
+        result = bilingual_title(original, translated)
+        self.assertIn(r"}\par\vspace{0.4ex}{\Large", result)
+        self.assertNotIn(r"}\[0.4ex]", result)
 
     def test_caption_translates_but_cell_is_opaque(self):
         tex = r"\begin{table}\caption{Results of \textbf{our model}}\begin{tabular}{c}Result\\\end{tabular}\end{table}"

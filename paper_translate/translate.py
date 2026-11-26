@@ -115,17 +115,20 @@ MASK = re.compile(
     r"\\(?:setlength|addtolength)\s*\\[A-Za-z@]+\s*" + GROUP + r"|" +
     r"(?<![\p{L}\d])[-+]?\d*\.?\d+(?:pt|em|ex|cm|mm|bp|sp|pc|mu)\b|" +
     r"\\(?:captionsetup|hypersetup|lstset|tikzset|pgfplotsset|usetikzlibrary|colorlet|graphicspath|"
-    r"newcolumntype|setlist|sisetup|setlength|addtolength|addtocounter|fontsize)\*?(?:[ \t]*\[[^\]\n]*\])*[ \t]*" + GROUP + r"(?:[ \t]*" + GROUP + r")?|" +
+    r"newcolumntype|setlist|sisetup|setlength|addtolength|addtocounter|fontsize)\*?(?:[ \t]*\[[^\]]*\])*[ \t]*" + GROUP + r"(?:[ \t]*" + GROUP + r")?|" +
  r"(?<!\\)%[^\n]*|"
     r"(?<!\\)\$\$(?:\\.|[^$])*?\$\$|(?<!\\)\$(?:\\.|[^$])*?\$|"
     r"\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|"
     r"\\(?:[A-Za-z]*cite[A-Za-z]*|[A-Za-z]*ref|label|url|path|input|include|"
     r"includegraphics|bibliography|bibliographystyle|begin|end|vspace|hspace|"
     r"cline|cmidrule|num|texttt|color|textcolor|colorbox|twemoji|captionof)\*?"
-    r"(?:[ \t]*\[[^\]\n]*\])*[ \t]*" + GROUP + r"(?:\[[^\]\n]*\])?|"
+    r"(?:[ \t]*\[[^\]]*\])*[ \t]*" + GROUP + r"(?:\[[^\]]*\])?|"
     r"\\href\s*" + GROUP + r"|"
-    r"\\subfigure\*?(?:\[[^\]\n]*\]){1,2}|"
-    r"\\[A-Za-z@]+\*?|\\[^\n]|[{}&#_^~]|"
+    r"\\subfigure\*?(?:\[[^\]]*\]){1,2}|"
+    # Preserve optional arguments for layout and formatting commands such as
+    # ``\\makebox[\\linewidth][c]``.  If the brackets are left in prose, a
+    # model can drop one and turn a valid document into a TeX syntax error.
+    r"\\[A-Za-z@]+\*?(?:[ \t]*\[[^\]]*\])*|\\[^\n]|[{}&#_^~]|"
     r"(?<![\p{L}\d])[-+]?\d+(?:[.,]\d+)*(?:[eE][-+]?\d+)?"
 )
 TOKEN = re.compile(r"\[\[\[T\d+\]\]\]")

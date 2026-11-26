@@ -15,6 +15,20 @@ class CounterProtectionTests(unittest.TestCase):
         self.assertNotIn('section', masked)
         self.assertEqual(saved, [source])
 
+    def test_generic_command_optional_arguments_are_opaque(self):
+        source = r'\makebox[\linewidth][c]{Caption}'
+        masked, saved = mask(source)
+        self.assertEqual(masked, '[[[T0]]][[[T1]]]Caption[[[T2]]]')
+        self.assertEqual(saved, [r'\makebox[\linewidth][c]', '{', '}'])
+
+    def test_multiline_graphic_options_and_paths_are_opaque(self):
+        source = r'''\includegraphics[
+    width=0.32\textwidth
+]{asset/point/point1.pdf}'''
+        masked, saved = mask(source)
+        self.assertEqual(masked, '[[[T0]]]')
+        self.assertEqual(saved, [source])
+
     def test_restore_cached_counter_names_without_changing_prose(self):
         original = r'\Alph{section}.\arabic{subsection}\section{APPENDIX}'
         translated = r'\Alph{章节}.\arabic{子章节}\section{附录}'

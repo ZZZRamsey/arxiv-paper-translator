@@ -246,6 +246,28 @@ def xetex_compatible(tex):
     tex = re.sub(r"(?<=[=,{\s])(\d*\.?\d+)px\b", r"\1bp", tex)
     # \pdfoutput=1 is an arXiv convention; under XeTeX it makes pgf pick the pdfTeX driver.
     tex = re.sub(r"(?m)^([ \t]*)\\pdfoutput[ \t]*=[ \t]*1\b", r"\1% \\pdfoutput=1", tex)
+    # These output metadata/compression assignments are pdfTeX primitives. XeTeX
+    # delegates the PDF backend to xdvipdfmx and does not define them; leaving one
+    # in a translated preamble stops compilation before the document starts.
+    pdftex_assignments = (
+        "pdfsuppressptexinfo", "pdfcompresslevel", "pdfobjcompresslevel",
+        "pdfgentounicode", "pdfminorversion", "pdfpkresolution",
+        "pdfimageresolution", "pdfgamma", "pdfimagehicolor",
+    )
+    assignment_names = "|".join(pdftex_assignments)
+    tex = re.sub(
+        rf"(?m)^([ \t]*)(\\(?:{assignment_names})\b[^\n]*)$",
+        lambda match: f"{match.group(1)}% XeTeX ignores pdfTeX setting: {match.group(2)}",
+        tex,
+    )
+    # microtype's ligature toggles are a pdfTeX-only feature and are fatal in
+    # XeTeX. They are typography hints, so drop the command and its arguments;
+    # this also handles classes that put it after another command on one line.
+    tex = re.sub(
+        r"\\DisableLigatures(?:\[[^\]\n]*\])?\s*\{[^{}\n]*\}",
+        "",
+        tex,
+    )
     # An explicit pdftex/dvips driver option does the same for graphicx, color and hyperref.
     def drop_driver(match):
         options = [option for option in match[2].split(",")
@@ -358,9 +380,23 @@ def repair_model_tex(text, original=""):
     return text
 
 
-def patch_pdftex_styles(root):
-    """Disable a PDFLaTeX guard in the private Unicode build copy."""
+def patch_xetex_sources(root):
+    """Apply XeTeX compatibility to copied classes and packages."""
     changed = []
+    for path in sorted(root.rglob("*")):
+        if path.suffix not in (".sty", ".cls") or not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        patched = xetex_compatible(text)
+        if patched != text:
+            path.write_text(patched, encoding="utf-8")
+            changed.append(path)
+    return changed
+
+
+def patch_pdftex_styles(root):
+    """Make PDFLaTeX-only styles safe for the Unicode XeTeX build."""
+    changed = patch_xetex_sources(root)
     for path in sorted(root.rglob("*.sty")):
         text = path.read_text(encoding="utf-8", errors="replace")
         patched = text.replace(
@@ -375,7 +411,8 @@ def patch_pdftex_styles(root):
             )
         if patched != text:
             path.write_text(patched, encoding="utf-8")
-            changed.append(path)
+            if path not in changed:
+                changed.append(path)
     return changed
 
 
@@ -531,9 +568,16 @@ def run(args, key):
                              lambda match: HOOK + match[0], content, count=1)
         (translated / path.relative_to(original)).write_text(xetex_compatible(content), encoding="utf-8")
     edited = {path.relative_to(original).as_posix() for path in translations}
-    compatibility_patches = []
+    # Classes and packages are copied unchanged by input_tree, so apply the
+    # XeTeX compatibility pass even when engine detection did not see an
+    # explicit \RequirePDFTeX marker in the root document.
+    compatibility_patches = patch_xetex_sources(translated)
     if requires_pdftex:
-        compatibility_patches = patch_pdftex_styles(translated)
+        for path in patch_pdftex_styles(translated):
+            if path not in compatibility_patches:
+                compatibility_patches.append(path)
+        edited.update(path.relative_to(translated).as_posix() for path in compatibility_patches)
+    else:
         edited.update(path.relative_to(translated).as_posix() for path in compatibility_patches)
     for name, checksum in original_files.items():
         if name not in edited and digest((translated / name).read_bytes()) != checksum:

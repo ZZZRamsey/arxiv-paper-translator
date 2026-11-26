@@ -85,9 +85,13 @@ class PackagingTests(unittest.TestCase):
 
     def test_pdftex_idioms_are_neutralized_for_xetex(self):
         from paper_translate.cli import xetex_compatible
-        source = "\\pdfoutput=1\n\\documentclass{article}\n\\usepackage[accsupp]{axessibility}\n"
+        source = ("\\pdfoutput=1\n\\pdfsuppressptexinfo=15\n"
+                  "\\pdfcompresslevel = 9\n\\documentclass{article}\n"
+                  "\\usepackage[accsupp]{axessibility}\n")
         result = xetex_compatible(source)
         self.assertIn("% \\pdfoutput=1", result)
+        self.assertIn("XeTeX ignores pdfTeX setting: \\pdfsuppressptexinfo=15", result)
+        self.assertIn("XeTeX ignores pdfTeX setting: \\pdfcompresslevel = 9", result)
         self.assertEqual(xetex_compatible("\\usepackage[pdftex, final]{graphicx}"), "\\usepackage[ final]{graphicx}")
         self.assertEqual(xetex_compatible("\\usepackage[pdftex]{graphicx}"), "\\usepackage[]{graphicx}")
         self.assertEqual(xetex_compatible("\\includegraphics[width=360px, height=2.5px]{a.pdf} 12px wide"),
@@ -96,6 +100,19 @@ class PackagingTests(unittest.TestCase):
                          ["cm-super-t1.enc"])
         self.assertIn(r"\let\pdfcompresslevel\aptPDFsetting", result)
         self.assertEqual(xetex_compatible("\\documentclass{article}\n"), "\\documentclass{article}\n")
+
+    def test_pdftex_class_primitives_are_patched_for_xetex(self):
+        from paper_translate.cli import patch_pdftex_styles
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            cls = root / "template.cls"
+            cls.write_text("\\pdfoutput=1\n\\pdfsuppressptexinfo=15\n"
+                           "\\DisableLigatures[f]{family=sf*}\n", encoding="utf-8")
+            changed = patch_pdftex_styles(root)
+            self.assertEqual([path.name for path in changed], ["template.cls"])
+            patched = cls.read_text(encoding="utf-8")
+            self.assertIn("XeTeX ignores pdfTeX setting", patched)
+            self.assertNotIn(r"\DisableLigatures", patched)
 
     def test_translation_command_differs_inside_the_app(self):
         self.assertEqual(runtime.cli_command(["x"])[1:], ["-u", "-m", "paper_translate", "x"])

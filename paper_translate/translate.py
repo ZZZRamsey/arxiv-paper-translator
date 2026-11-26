@@ -83,21 +83,67 @@ exactly once and in its original relative order. Do not insert any TeX commands.
 Return only the translated text, without fences, headers or explanations."""
 
 GROUP = r"(?&brace)"
-DEFINITIONS = r"(?(DEFINE)(?<brace>\{(?:\\[{}]|[^{}]|(?&brace))*\}))"
+BRACKET = r"(?&bracket)"
+DEFINITIONS = (
+    r"(?(DEFINE)"
+    r"(?<brace>\{(?:\\[{}]|[^{}]|(?&brace))*\})"
+    r"(?<bracket>\[(?:\\[\[\]]|\\.|[^\[\]\\]|(?&bracket))*\])"
+    r")"
+)
 ENV = (r"tabular\*?|tabularx|tabulary|longtable|tblr|table\*?|threeparttable|"
        r"verbatim\*?|Verbatim|CodeVerbatim|lstlisting|minted|tikzpicture|thebibliography|equation\*?|align\*?|"
-       r"gather\*?|multline\*?|alignat\*?|displaymath|math|algorithmic")
+       r"gather\*?|multline\*?|alignat\*?|displaymath|math|algorithmic|"
+       r"matrix|pmatrix|bmatrix|Bmatrix|vmatrix|Vmatrix|smallmatrix|cases|dcases|rcases|"
+       r"aligned|alignedat|gathered|split|array|tikzcd|NiceMatrix|pNiceMatrix|bNiceMatrix|"
+       r"BNiceMatrix|vNiceMatrix|VNiceMatrix")
 COMMAND_DEFINITION = (r"\\(?:newcommand|renewcommand|providecommand|DeclareRobustCommand)\*?\s*"
-                      r"(?:\\[A-Za-z@]+|" + GROUP + r")\s*(?:\[[^\]\n]*\]\s*){0,2}" + GROUP)
+                      r"(?:\\[A-Za-z@]+|" + GROUP + r")\s*(?:" + BRACKET + r"\s*){0,2}" + GROUP)
+ENVIRONMENT_DEFINITION = (r"\\(?:newenvironment|renewenvironment|provideenvironment)\*?\s*"
+                          + GROUP + r"\s*(?:" + BRACKET + r"\s*){0,2}"
+                          + GROUP + r"\s*" + GROUP)
+DOCUMENT_COMMAND_DEFINITION = (
+    r"\\(?:NewDocumentCommand|RenewDocumentCommand|ProvideDocumentCommand|DeclareDocumentCommand)\s*"
+    + GROUP + r"\s*" + GROUP + r"\s*" + GROUP
+)
+DOCUMENT_ENVIRONMENT_DEFINITION = (
+    r"\\(?:NewDocumentEnvironment|RenewDocumentEnvironment|ProvideDocumentEnvironment|"
+    r"DeclareDocumentEnvironment)\s*" + GROUP + r"\s*" + GROUP + r"\s*" + GROUP + r"\s*" + GROUP
+)
+MATH_OPERATOR_DEFINITION = r"\\DeclareMathOperator\*?\s*" + GROUP + r"\s*" + GROUP
+MACRO_DEFINITION = (r"\\(?:def|edef|gdef|xdef)\s*\\[A-Za-z@]+\s*"
+                    r"(?:#\d+\s*)*" + GROUP)
+LET_DEFINITION = r"\\let\s*\\[A-Za-z@]+\s*(?:=\s*)?\\[A-Za-z@]+"
+COUNTER_DEFINITION = (
+    r"\\newcounter\*?\s*" + GROUP + r"(?:\s*" + BRACKET + r")?|"
+    r"\\(?:newlength|newsavebox)\s*(?:\\[A-Za-z@]+|" + GROUP + r")|"
+    r"\\newboolean\s*" + GROUP + r"|"
+    r"\\(?:counterwithin|numberwithin)\*?\s*" + GROUP + r"\s*" + GROUP + r"|"
+    r"\\usecounter\s*" + GROUP
+)
+DEFINITION = (COMMAND_DEFINITION + r"|" + ENVIRONMENT_DEFINITION + r"|"
+              + DOCUMENT_COMMAND_DEFINITION + r"|" + DOCUMENT_ENVIRONMENT_DEFINITION + r"|"
+              + MATH_OPERATOR_DEFINITION + r"|" + MACRO_DEFINITION + r"|" + LET_DEFINITION
+              + r"|" + COUNTER_DEFINITION)
+NEWTHEOREM = r"\\newtheorem\*?\s*" + GROUP + r"(?:\s*" + BRACKET + r")?"
+LANGUAGE_COMMAND = r"\\(?:selectlanguage|foreignlanguage)\*?\s*" + GROUP
+FONT_DEFINITION = (r"\\(?:newfontfamily|newfontface|newCJKfontfamily)\*?\s*"
+                   r"\\[A-Za-z@]+(?:\s*" + BRACKET + r")*\s*" + GROUP)
+RAISEBOX = r"\\raisebox\*?\s*" + GROUP + r"(?:\s*" + BRACKET + r"){0,2}"
+PARBOX = r"\\parbox\*?(?:\s*" + BRACKET + r"){0,3}\s*" + GROUP
+MULTIROW = r"\\multirow\*?(?:\s*" + BRACKET + r")*\s*" + GROUP + r"\s*" + GROUP + r"(?:\s*" + BRACKET + r")*"
+INLINE_CODE = r"\\(?:verb|lstinline)\*?(?:\|[^|]*\||\+[^+]*\+|/[^/]*/|![^!]*!)"
+MINTINLINE = r"\\mintinline\*?(?:\s*" + BRACKET + r")*\s*" + GROUP + r"\s*(?:\|[^|]*\||\+[^+]*\+|/[^/]*/|![^!]*!)"
+SUBFLOAT = r"\\(?:subfloat|subfigure)\*?(?:\s*" + BRACKET + r"){0,2}\s*" + GROUP
 OPAQUE = re.compile(
-    DEFINITIONS + COMMAND_DEFINITION + r"|" + r"(?P<comment>(?<!\\)%[^\n]*)|"
+    DEFINITIONS + r"(?:" + DEFINITION + r"|" + SUBFLOAT + r")|"
+    + r"(?P<comment>(?<!\\)%[^\n]*)|"
     r"(?P<env>\\begin\{(?P<name>" + ENV + r")\}[\s\S]*?\\end\{\g<name>\})|"
     r"\\(?:author|affiliation|institute|address|email|authorrunning|date|"
-    r"newcommand|renewcommand|providecommand|DeclareRobustCommand)\*?\s*"
-    + GROUP + r"(?:\[[^\]\n]*\]){0,2}(?:[ \t]*" + GROUP + r")?"
+    r"newcommand|renewcommand|providecommand|DeclareRobustCommand)\*?"
+    + r"(?:\s*" + BRACKET + r"){0,2}\s*" + GROUP + r"(?:\s*" + GROUP + r")?"
 )
 CAPTION = re.compile(
-    DEFINITIONS + r"\\(?:captionof\*?\s*" + GROUP + r"|caption\*?)(?:\[[^\]\n]*\])?\s*"
+    DEFINITIONS + r"\\(?:captionof\*?\s*" + GROUP + r"|caption\*?)(?:\s*" + BRACKET + r")?\s*"
     + r"\{(?P<body>(?:\\[{}]|[^{}]|" + GROUP + r")*)\}"
 )
 # A variant or file name written with escaped underscores (\\textit{Ours\\_clip}) is a label
@@ -106,8 +152,16 @@ CAPTION = re.compile(
 IDENTIFIER = (r"\\(?:textit|textbf|emph|textsc|textsf|textrm)\s*\{[A-Za-z0-9.+-]+(?:\\_[A-Za-z0-9.+-]+)+\}|"
               r"(?<![\p{L}\d\\])[A-Za-z0-9]+(?:\\_[A-Za-z0-9]+)+(?![\p{L}\d])")
 MASK = re.compile(
-    DEFINITIONS + COMMAND_DEFINITION + r"|" + r"\\(?:alph|Alph|arabic|roman|Roman|fnsymbol|value)\s*" + GROUP + r"|" + r"\\(?:icmlsetsymbol|icmlauthor|icmlaffiliation|icmlcorrespondingauthor|setcounter)\s*" + GROUP + r"\s*" + GROUP + r"|" +
-    r"\\(?:icmlkeywords|raisebox|parbox)\s*" + GROUP + r"|" +
+    DEFINITIONS + r"(?:" + DEFINITION + r"|" + SUBFLOAT + r")|"
+    + INLINE_CODE + r"|" + MINTINLINE + r"|"
+    + NEWTHEOREM + r"|" + LANGUAGE_COMMAND + r"|" + FONT_DEFINITION + r"|"
+    r"\\DeclareCaptionType\s*" + GROUP + r"|"
+    r"\\(?:theoremstyle|selectlanguage)\*?\s*" + GROUP + r"|"
+    r"\\newglossaryentry\s*" + GROUP + r"|"
+    r"\\newacronym\s*" + GROUP + r"\s*" + GROUP + r"\s*" + GROUP + r"|"
+    r"\\(?:gls|Gls|GLS|acrshort|acrlong|acrfull)\*?\s*" + GROUP + r"|"
+    + r"\\(?:alph|Alph|arabic|roman|Roman|fnsymbol|value)\s*" + GROUP + r"|" + r"\\(?:icmlsetsymbol|icmlauthor|icmlaffiliation|icmlcorrespondingauthor|setcounter)\s*" + GROUP + r"\s*" + GROUP + r"|" +
+    r"\\(?:icmlkeywords)\s*" + GROUP + r"|" +
     r"\\(?:vskip|hskip)\s*[-+]?[0-9.]+(?:pt|mm|cm|in|em|ex)\b|" +
     IDENTIFIER + r"|" +
     # Settings, not prose: \captionsetup{type=figure}, \definecolor{name}{rgb}{0,1,0}, ...
@@ -115,20 +169,32 @@ MASK = re.compile(
     r"\\(?:setlength|addtolength)\s*\\[A-Za-z@]+\s*" + GROUP + r"|" +
     r"(?<![\p{L}\d])[-+]?\d*\.?\d+(?:pt|em|ex|cm|mm|bp|sp|pc|mu)\b|" +
     r"\\(?:captionsetup|hypersetup|lstset|tikzset|pgfplotsset|usetikzlibrary|colorlet|graphicspath|"
-    r"newcolumntype|setlist|sisetup|setlength|addtolength|addtocounter|fontsize)\*?(?:[ \t]*\[[^\]]*\])*[ \t]*" + GROUP + r"(?:[ \t]*" + GROUP + r")?|" +
- r"(?<!\\)%[^\n]*|"
+    r"newcolumntype|setlist|sisetup|setlength|addtolength|addtocounter|fontsize|geometry|newgeometry|setkeys)\*?(?:\s*" + BRACKET + r")*\s*" + GROUP + r"(?:\s*" + GROUP + r")?|" +
+    r"\\multicolumn\s*" + GROUP + r"\s*" + GROUP + r"|" + MULTIROW + r"|"
+    r"\\fcolorbox\s*" + GROUP + r"\s*" + GROUP + r"|" +
+    RAISEBOX + r"|" + PARBOX + r"|" +
+    r"\\(?:addcontentsline)\s*" + GROUP + r"\s*" + GROUP + r"|"
+    r"\\addtocontents\s*" + GROUP + r"\s*" + GROUP + r"|"
+    r"\\(?:hyperlink|hypertarget)\s*" + GROUP + r"|"
+    r"\\crefrange\s*" + GROUP + r"\s*" + GROUP + r"|"
+    r"\\(?:subimport|import|includefrom|inputfrom|subinputfrom)\s*" + GROUP + r"\s*" + GROUP + r"|"
+    r"\\(?:index|glossary)\*?\s*" + GROUP + r"|"
+    r"\\(?:lstinputlisting|verbatiminput|includepdf|addbibresource)\*?(?:\s*" + BRACKET + r")*\s*" + GROUP + r"|"
+    r"\\inputminted\*?(?:\s*" + BRACKET + r")*\s*" + GROUP + r"\s*" + GROUP + r"|"
+    r"(?<!\\)%[^\n]*|"
     r"(?<!\\)\$\$(?:\\.|[^$])*?\$\$|(?<!\\)\$(?:\\.|[^$])*?\$|"
     r"\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|"
-    r"\\(?:[A-Za-z]*cite[A-Za-z]*|[A-Za-z]*ref|label|url|path|input|include|"
+    r"\\(?:[A-Za-z]*cite[A-Za-z]*|[A-Za-z]*ref|label|url|path|input|include|includeonly|"
+    r"includesvg|includeinkscape|"
     r"includegraphics|bibliography|bibliographystyle|begin|end|vspace|hspace|"
     r"cline|cmidrule|num|texttt|color|textcolor|colorbox|twemoji|captionof)\*?"
-    r"(?:[ \t]*\[[^\]]*\])*[ \t]*" + GROUP + r"(?:\[[^\]]*\])?|"
+    r"(?:\s*" + BRACKET + r")*\s*" + GROUP + r"(?:\s*" + BRACKET + r")?|"
     r"\\href\s*" + GROUP + r"|"
-    r"\\subfigure\*?(?:\[[^\]]*\]){1,2}|"
+    r"\\(?:subfigure|subfloat)\*?(?:\s*" + BRACKET + r"){1,2}|"
     # Preserve optional arguments for layout and formatting commands such as
     # ``\\makebox[\\linewidth][c]``.  If the brackets are left in prose, a
     # model can drop one and turn a valid document into a TeX syntax error.
-    r"\\[A-Za-z@]+\*?(?:[ \t]*\[[^\]]*\])*|\\[^\n]|[{}&#_^~]|"
+    r"\\[A-Za-z@]+\*?(?:\s*" + BRACKET + r")*|\\[^\n]|[{}&#_^~]|"
     r"(?<![\p{L}\d])[-+]?\d+(?:[.,]\d+)*(?:[eE][-+]?\d+)?"
 )
 TOKEN = re.compile(r"\[\[\[T\d+\]\]\]")
@@ -137,7 +203,7 @@ NUMBER_WORDS = ("one", "two", "three", "four", "five", "six", "seven", "eight", 
                 "eleven", "twelve")
 DIGITS = re.compile(r"\d+(?:[.,]\d+)*")
 JSON_FENCE = re.compile(r"\x60{3}(?:json)?\s*(.*?)\s*\x60{3}", flags=re.DOTALL | re.IGNORECASE)
-TITLE = re.compile(DEFINITIONS + r"(?m)^[ \t]*\\title(?:\[[^\]\n]*\])?\s*(?P<title>" + GROUP + ")")
+TITLE = re.compile(DEFINITIONS + r"(?m)^[ \t]*\\title\*?(?:\s*" + BRACKET + r")?\s*(?P<title>" + GROUP + ")")
 ICML_TITLE = re.compile(DEFINITIONS + r"(?m)^[ \t]*\\icmltitle\s*(?P<title>" + GROUP + ")")
 BOUNDARY = re.compile(r"(\n[ \t]*\n(?:[ \t]*\n)*)")
 ESCAPE = dict(zip("\\{}%&#_$^~", (
@@ -177,13 +243,18 @@ def bilingual_title(original, translated):
     start, end = title_content(translated)
     if not re.search(r"\p{Han}", translated[start:end]):
         raise ValueError("未检测到中文标题")
+    translated_title = translated[start:end].strip()
+    # A model may copy a source title's line break after translating only the
+    # first line.  At the end of a title group that ``\\`` is a vertical-mode
+    # error once the bilingual title is followed by ``\par``.
+    translated_title = re.sub(r"(?:\\\\(?:\s*\[[^\]]*\])?\s*)+$", "", translated_title).rstrip()
     # ``\\`` is not safe at this boundary for custom classes that render the
     # title inside a box or a ``twocolumn[...]`` argument.  In those contexts
     # the group containing the translated title can end while TeX is in
     # vertical mode, which produces "There's no line here to end" at
     # ``\\maketitle``.  A paragraph break is valid in both the standard
     # classes and these title boxes, and keeps the intended visual spacing.
-    return (translated[:start] + r"{\large " + translated[start:end].strip()
+    return (translated[:start] + r"{\large " + translated_title
             + r"}\par\vspace{0.4ex}{\Large "
             + original[left:right].strip() + "}" + translated[end:])
 
@@ -239,9 +310,15 @@ def plan(tex, root=False, table=False):
             yield part, index % 2 == 0 and bool(re.search(r"[A-Za-z]{2}", MASK.sub("", part)))
 
 
-STRUCTURAL = re.compile(DEFINITIONS + COMMAND_DEFINITION + r"|"
+STRUCTURAL = re.compile(DEFINITIONS + r"(?:" + DEFINITION + r")|"
     r"\\(?:alph|Alph|arabic|roman|Roman|fnsymbol|value|newcounter)\s*" + GROUP + r"|"
     r"\\(?:setcounter|addtocounter)\s*" + GROUP + r"\s*" + GROUP)
+
+ENVIRONMENT_TOKEN = re.compile(r"\\(begin|end)\s*\{([^{}]+)\}")
+REFERENCE_TOKEN = re.compile(
+    DEFINITIONS + r"\\(?:label|(?:page)?ref|eqref|(?:auto)?cref|(?:auto)?Cref|"
+    r"[A-Za-z]*cite[A-Za-z]*)\*?(?:\s*" + BRACKET + r")?\s*" + GROUP
+)
 
 
 def validate_structure(original, translated):
@@ -251,6 +328,20 @@ def validate_structure(original, translated):
         return collections.Counter(match[0] for match in STRUCTURAL.finditer(text))
     if signature(original) != signature(translated):
         raise ValueError("译文改动了 LaTeX 宏定义或计数器，已阻止编译；请重新翻译该段")
+
+    def environment_signature(text):
+        text = re.sub(r"(?<!\\)%[^\n]*", "", text)
+        return [(match[1], match[2]) for match in ENVIRONMENT_TOKEN.finditer(text)]
+
+    if environment_signature(original) != environment_signature(translated):
+        raise ValueError("译文改动了 LaTeX 环境边界，已阻止编译；请重新翻译该段")
+
+    def reference_signature(text):
+        text = re.sub(r"(?<!\\)%[^\n]*", "", text)
+        return collections.Counter(match[0] for match in REFERENCE_TOKEN.finditer(text))
+
+    if reference_signature(original) != reference_signature(translated):
+        raise ValueError("译文改动了引用或标签，已阻止编译；请重新翻译该段")
 
 
 def mask(text):
@@ -765,6 +856,13 @@ class Translator:
             cached = ""
         try:
             validate_structure(source, cached)
+            _, source_saved = mask(source)
+            _, cached_saved = mask(cached)
+            numeric = re.compile(r"[-+]?\d+(?:[.,]\d+)*(?:[eE][-+]?\d+)?\Z")
+            source_saved = [item for item in source_saved if not numeric.fullmatch(item.strip())]
+            cached_saved = [item for item in cached_saved if not numeric.fullmatch(item.strip())]
+            if source_saved != cached_saved:
+                raise ValueError("缓存译文改动了受保护的 TeX 片段")
         except ValueError:
             cached = ""
         if re.search(r"\p{Han}", cached):
@@ -926,7 +1024,7 @@ class Translator:
         strategy = ([LOCAL_PROMPT, self.title, self.glossary, self.review]
                     if self.is_local else PROMPT)
         fingerprint = hashlib.sha256(json.dumps(
-            [3, self.provider, self.model, strategy, text.strip()], ensure_ascii=False
+            [4, self.provider, self.model, strategy, text.strip()], ensure_ascii=False
         ).encode()).hexdigest()
         return self.cache / (fingerprint + ".txt")
 

@@ -39,8 +39,11 @@ def detect_engine(source, root=None):
         root_text = root.read_text(encoding="utf-8", errors="replace")
         if "ARXIV_TRANSLATOR_XETEX" in root_text:
             return "tectonic"
-    candidates.extend(sorted(source.rglob("*.cls")))
-    candidates.extend(sorted(source.rglob("*.sty")))
+    candidates.extend(sorted(path for path in source.rglob("*")
+                             if path.is_file() and path.suffix.lower() in {
+                                 ".cls", ".sty", ".def", ".cfg", ".clo", ".fd",
+                                 ".bbx", ".cbx", ".ldf", ".inc",
+                             }))
     for path in candidates:
         if not path or not path.is_file():
             continue

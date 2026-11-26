@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import unicodedata
+from collections import defaultdict
 from pathlib import Path
 
 from pypdf import PdfReader, PdfWriter
@@ -19,13 +20,13 @@ def inspect_pdf(path):
         "pages": len(reader.pages),
         "geometry": [[float(p.mediabox.width), float(p.mediabox.height), p.rotation]
                      for p in reader.pages],
-        "han_characters": sum(len(re.findall(r"[\u3400-\u9fff]", p.extract_text()))
+        "han_characters": sum(len(re.findall(r"[\u3400-\u9fff]", p.extract_text() or ""))
                               for p in reader.pages),
     }
 
 
 def check_titles(path, original, translated):
-    first = PdfReader(path).pages[0].extract_text()
+    first = PdfReader(path).pages[0].extract_text() or ""
 
     def canonical(text):
         # TeX writes quotes as `` and ''; the PDF has the typeset curly ones.
@@ -64,6 +65,46 @@ def direct_links(path):
     counts = {"ref-": 0, "cite-": 0}
     targets = {"ref-": set(), "cite-": set()}
     placements = {}
+    modified = False
+
+    page_indices = {
+        page.indirect_reference.idnum: index
+        for index, page in enumerate(reader.pages)
+        if page.indirect_reference is not None
+    }
+    page_indices.update({
+        page.indirect_reference.idnum: index
+        for index, page in enumerate(writer.pages)
+        if page.indirect_reference is not None
+    })
+    named_by_signature = defaultdict(set)
+    for name, destination in names.items():
+        if not (name.startswith("ref-") or name.startswith("cite-")):
+            continue
+        if destination.typ != "/XYZ":
+            continue
+        try:
+            index = reader.get_destination_page_number(destination)
+            signature = (index, float(destination.left), float(destination.top))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        named_by_signature[signature].add(name)
+
+    def array_destination(value):
+        """Return (page index, x, y) for a page-array /XYZ destination."""
+        value = value.get_object() if hasattr(value, "get_object") else value
+        if not isinstance(value, ArrayObject) or len(value) < 4 or value[1] != "/XYZ":
+            return None
+        page_ref = value[0]
+        index = page_indices.get(getattr(page_ref, "idnum", None))
+        if index is None:
+            return None
+        try:
+            x, y = float(value[2]), float(value[3])
+        except (TypeError, ValueError):
+            return None
+        return index, x, y
+
     for page_index, page in enumerate(writer.pages):
         for annotation in page.get("/Annots", []):
             link = annotation.get_object()
@@ -72,33 +113,54 @@ def direct_links(path):
             if link.get("/Subtype") != "/Link" or not action or action.get("/S") != "/GoTo":
                 continue
             name = action.get("/D")
-            if not isinstance(name, str):
-                continue
-            prefix = next((prefix for prefix in counts if name.startswith(prefix)), None)
-            if prefix is None:
-                continue
-            destination = names.get(name)
-            if not destination or destination.typ != "/XYZ":
-                raise ValueError(f"引用目标不存在或缺少 XYZ 坐标：{name}")
-            index = reader.get_destination_page_number(destination)
-            if not isinstance(index, int) or not 0 <= index < len(writer.pages):
-                raise ValueError(f"引用目标页无效：{name}")
-            x, y = float(destination.left), float(destination.top)
+            destination_name = None
+            if isinstance(name, str):
+                prefix = next((prefix for prefix in counts if name.startswith(prefix)), None)
+                if prefix is None:
+                    continue
+                destination = names.get(name)
+                if not destination or destination.typ != "/XYZ":
+                    raise ValueError(f"引用目标不存在或缺少 XYZ 坐标：{name}")
+                index = reader.get_destination_page_number(destination)
+                if not isinstance(index, int) or not 0 <= index < len(writer.pages):
+                    raise ValueError(f"引用目标页无效：{name}")
+                x, y = float(destination.left), float(destination.top)
+                destination_name = name
+            else:
+                resolved = array_destination(name)
+                if resolved is None:
+                    continue
+                index, x, y = resolved
+                candidates = named_by_signature.get((index, x, y), ())
+                destination_name = next(
+                    (candidate for candidate in candidates
+                     if candidate.startswith("ref-") or candidate.startswith("cite-")),
+                    None,
+                )
+                if destination_name is None:
+                    continue
+                prefix = next((prefix for prefix in counts
+                               if destination_name.startswith(prefix)), None)
+                if prefix is None:
+                    continue
             bounds = writer.pages[index].mediabox
             if not (math.isfinite(x) and math.isfinite(y)
                     and bounds.left <= x <= bounds.right and bounds.bottom <= y <= bounds.top):
-                raise ValueError(f"引用目标超出页面：{name}")
+                raise ValueError(f"引用目标超出页面：{destination_name}")
             rect = [float(value) for value in link.get("/Rect", [])]
             if (len(rect) != 4 or not all(map(math.isfinite, rect))
                     or rect[0] >= rect[2] or rect[1] >= rect[3]):
-                raise ValueError(f"引用的点击区域无效：{name}")
-            placements.setdefault((page_index, name), []).append(rect)
-            action[NameObject("/D")] = ArrayObject([
-                writer.pages[index].indirect_reference, NameObject("/XYZ"),
-                FloatObject(x), FloatObject(y), FloatObject(0),
-            ])
+                raise ValueError(f"引用的点击区域无效：{destination_name}")
+            if prefix == "ref-":
+                placements.setdefault((page_index, destination_name), []).append(rect)
+            if isinstance(name, str):
+                action[NameObject("/D")] = ArrayObject([
+                    writer.pages[index].indirect_reference, NameObject("/XYZ"),
+                    FloatObject(x), FloatObject(y), FloatObject(0),
+                ])
+                modified = True
             counts[prefix] += 1
-            targets[prefix].add(name)
+            targets[prefix].add(destination_name)
     generated = {name for name in names if re.fullmatch(r"cite-\d+-.+", name)}
     if generated:
         if generated != targets["cite-"] or counts["cite-"] < len(generated):
@@ -112,7 +174,7 @@ def direct_links(path):
             if not any(left - 8 <= x <= right + 8 and bottom - 8 <= y <= top + 24
                        for left, bottom, right, top in rectangles):
                 raise ValueError(f"返回锚点未对准正文点击区域：{name}")
-    if any(counts.values()):
+    if modified:
         temporary = path.with_suffix(".direct.pdf")
         writer.write(temporary)
         temporary.replace(path)
@@ -124,8 +186,11 @@ def render_hashes(pdf, folder, executable=None):
     if not executable:
         raise ValueError("渲染校验需要 Poppler 的 pdftoppm，可用 --pdftoppm 指定")
     folder.mkdir()
-    subprocess.run([str(executable), "-r", "96", "-png", str(pdf), str(folder / "page")],
-                   check=True, timeout=360, stdout=subprocess.DEVNULL)
+    try:
+        subprocess.run([str(executable), "-r", "96", "-png", str(pdf), str(folder / "page")],
+                       check=True, timeout=360, stdout=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired as error:
+        raise ValueError(f"PDF 渲染超时（超过 360 秒）：{pdf}") from error
     return [hashlib.sha256(path.read_bytes()).hexdigest()
             for path in sorted(folder.glob("page-*.png"))]
 

@@ -1,6 +1,7 @@
 """Download, translate, build and package a versioned arXiv manuscript."""
 
 import argparse
+import errno
 import getpass
 import json
 import os
@@ -33,12 +34,19 @@ from .ollama import ensure_server, text_only
 
 COMMENT = re.compile(r"(?<!\\)%[^\n]*")
 INPUT = re.compile(r"\\(?:input|include|subfile)(?![A-Za-z@])\s*(?:\{([^{}]+)\}|([^\s%{}\\]+))")
+IMPORT = re.compile(
+    r"\\(?:subimport|import|includefrom|inputfrom|subinputfrom)(?![A-Za-z@])\s*"
+    r"\{([^{}]*)\}\s*\{([^{}]+)\}"
+)
+ROOT_EXTENSIONS = {".tex", ".ltx", ".latex"}
+STYLE_EXTENSIONS = {".sty", ".cls", ".def", ".cfg", ".clo", ".fd", ".bbx", ".cbx", ".ldf", ".inc"}
 
 
 def root_candidates(source):
     source = source.resolve()
     candidates = []
-    for path in sorted(source.rglob("*.tex")):
+    for path in sorted(path for path in source.rglob("*")
+                       if path.is_file() and path.suffix.lower() in ROOT_EXTENSIONS):
         text = COMMENT.sub("", path.read_text(encoding="utf-8-sig", errors="replace"))
         if re.search(r"\\document(?:class|style)\b", text) and r"\begin{document}" in text:
             candidates.append(path)
@@ -53,13 +61,19 @@ def locate_root(source, override=None):
         if path not in candidates:
             raise ValueError("--root 必须指定源码包内的文档根 TeX")
         return path
-    if source / "main.tex" in candidates:
-        return source / "main.tex"
+    for main_name in ("main.tex", "main.ltx", "main.latex"):
+        if source / main_name in candidates:
+            return source / main_name
     readme = source / "00README.json"
     if readme.is_file():
-        data = json.loads(readme.read_text(encoding="utf-8"))
-        hints = {entry.get("filename") for entry in data.get("sources", [])
-                 if entry.get("usage") == "toplevel"}
+        try:
+            data = json.loads(readme.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValueError(f"源码 00README.json 无法解析：{error}") from error
+        if not isinstance(data, dict) or not isinstance(data.get("sources", []), list):
+            raise ValueError("源码 00README.json 的 sources 字段格式无效")
+        hints = {entry.get("filename") for entry in data["sources"]
+                 if isinstance(entry, dict) and entry.get("usage") == "toplevel"}
         selected = [p for p in candidates if p.relative_to(source).as_posix() in hints]
         if len(selected) == 1:
             return selected[0]
@@ -70,6 +84,7 @@ def locate_root(source, override=None):
 
 
 def input_tree(root, source):
+    root, source = root.resolve(), source.resolve()
     documents = {}
     visited = set()
     pending = [(root, False)]
@@ -89,10 +104,22 @@ def input_tree(root, source):
         if not protected:
             documents[path] = (text, path == root, table)
         preamble_end = clean.find(r"\begin{document}") if path == root else -1
+        for match in IMPORT.finditer(clean):
+            directory, name = match.groups()
+            choices = (name, name + ".tex", name + ".ltx", name + ".latex")
+            for parent in (path.parent, root.parent):
+                base = (parent / directory).resolve()
+                found = [(base / choice).resolve() for choice in choices]
+                found = [target for target in found if target.is_relative_to(source) and target.is_file()]
+                if found:
+                    pending.append((found[0], protected or match.start() < preamble_end))
+                    break
+            else:
+                raise ValueError(f"无法解析 TeX 导入 {directory!r}/{name!r}（{path.relative_to(source)}）")
         for match in INPUT.finditer(clean):
             braced, bare = match.groups()
             name = braced or bare
-            choices = (name, name + ".tex")
+            choices = (name, name + ".tex", name + ".ltx", name + ".latex")
             for parent in (root.parent, path.parent):
                 found = [(parent / choice).resolve() for choice in choices]
                 found = [target for target in found if target.is_relative_to(source) and target.is_file()]
@@ -165,6 +192,15 @@ def build_once(root, target, log, source=None, engine=None):
     with log.open("w", encoding="utf-8") as stream:
         passes = 1 if engine == "tectonic" else 3
         result = None
+
+        def execute(command, cwd, environment, phase):
+            try:
+                return subprocess.run(command, cwd=cwd, stdout=stream,
+                                      stderr=subprocess.STDOUT, timeout=360, env=environment)
+            except subprocess.TimeoutExpired as error:
+                stream.write(f"\n=== {phase} timeout after 360 seconds ===\n")
+                raise ValueError(f"LaTeX 编译超时（{phase}，超过 360 秒），日志：{log}") from error
+
         for attempt in range(passes):
             command, environment = command_for(source, target, engine_args, engine=engine)
             if engine == "xelatex":
@@ -172,8 +208,8 @@ def build_once(root, target, log, source=None, engine=None):
                 environment["TEXMFVAR"] = str(target / "texmf-var")
                 environment["TEXMFCONFIG"] = str(target / "texmf-config")
             stream.write(f"\n=== {engine} pass {attempt + 1} ===\n")
-            result = subprocess.run(command, cwd=working_directory, stdout=stream,
-                                    stderr=subprocess.STDOUT, timeout=360, env=environment)
+            result = execute(command, working_directory, environment,
+                             f"{engine} pass {attempt + 1}")
             if result.returncode:
                 break
         if result and result.returncode == 0 and engine in ("pdflatex", "xelatex") and not root.with_suffix(".bbl").is_file():
@@ -183,8 +219,7 @@ def build_once(root, target, log, source=None, engine=None):
                 environment["BIBINPUTS"] = f"{root.parent}:{target}:"
                 environment["BSTINPUTS"] = f"{root.parent}:{target}:"
                 stream.write("\n=== bibtex ===\n")
-                result = subprocess.run(command, cwd=target, stdout=stream,
-                                        stderr=subprocess.STDOUT, timeout=360, env=environment)
+                result = execute(command, target, environment, "bibtex")
                 if result.returncode == 0:
                     for attempt in range(2):
                         command, environment = command_for(source, target, engine_args, engine=engine)
@@ -193,8 +228,8 @@ def build_once(root, target, log, source=None, engine=None):
                             environment["TEXMFVAR"] = str(target / "texmf-var")
                             environment["TEXMFCONFIG"] = str(target / "texmf-config")
                         stream.write(f"\n=== {engine} bibliography pass {attempt + 1} ===\n")
-                        result = subprocess.run(command, cwd=working_directory, stdout=stream,
-                                                stderr=subprocess.STDOUT, timeout=360, env=environment)
+                        result = execute(command, working_directory, environment,
+                                         f"{engine} bibliography pass {attempt + 1}")
                         if result.returncode:
                             break
     pdf = target / (root.stem + ".pdf")
@@ -242,17 +277,34 @@ def add_local_dependencies(directory, root):
 
 def xetex_compatible(tex):
     """Neutralize pdfTeX idioms of arXiv templates so XeTeX (Tectonic) can run them."""
+    tex = re.sub(r"(?m)^([ \t]*)\\RequirePDFTeX\s*$",
+                 r"\1% PDFLaTeX guard disabled for the Unicode build", tex)
+    tex = re.sub(r"\\RequirePDFTeX\b", lambda _match: r"\relax", tex)
     # px is a pdfTeX-only unit (\pdfpxdimen, 1bp by default): width=360px.
-    tex = re.sub(r"(?<=[=,{\s])(\d*\.?\d+)px\b", r"\1bp", tex)
-    # \pdfoutput=1 is an arXiv convention; under XeTeX it makes pgf pick the pdfTeX driver.
-    tex = re.sub(r"(?m)^([ \t]*)\\pdfoutput[ \t]*=[ \t]*1\b", r"\1% \\pdfoutput=1", tex)
+    tex = re.sub(r"(?<=[=,{])(\d*\.?\d+)px\b", r"\1bp", tex)
+    tex = re.sub(
+        r"(\\(?:vskip|hskip|hspace|vspace|rule|kern)\s+)(\d*\.?\d+)px\b",
+        r"\1\2bp",
+        tex,
+    )
+    # \pdfoutput is an arXiv convention; under XeTeX it makes pgf pick the
+    # pdfTeX driver. Keep standalone assignments visible in the source log,
+    # and remove inline/global variants without commenting out surrounding code.
+    standalone_pdfoutput = re.compile(
+        r"(?m)^([ \t]*)(?:\\global\s*)?\\pdfoutput\s*=\s*(\d+)\b[ \t]*$"
+    )
+    tex = standalone_pdfoutput.sub(
+        lambda match: f"{match.group(1)}% \\pdfoutput={match.group(2)}", tex
+    )
     # These output metadata/compression assignments are pdfTeX primitives. XeTeX
     # delegates the PDF backend to xdvipdfmx and does not define them; leaving one
     # in a translated preamble stops compilation before the document starts.
     pdftex_assignments = (
         "pdfsuppressptexinfo", "pdfcompresslevel", "pdfobjcompresslevel",
         "pdfgentounicode", "pdfminorversion", "pdfpkresolution",
-        "pdfimageresolution", "pdfgamma", "pdfimagehicolor",
+        "pdfimageresolution", "pdfgamma", "pdfimagehicolor", "pdfdraftmode",
+        "pdfhorigin", "pdfvorigin", "pdfdecimaldigits", "pdflastlinedepth",
+        "pdfoptionpdfminorversion",
     )
     assignment_names = "|".join(pdftex_assignments)
     tex = re.sub(
@@ -260,6 +312,34 @@ def xetex_compatible(tex):
         lambda match: f"{match.group(1)}% XeTeX ignores pdfTeX setting: {match.group(2)}",
         tex,
     )
+    # The same assignments are sometimes embedded in a conditional or a
+    # package line. Removing just the assignment keeps the surrounding TeX.
+    inline_assignment = re.compile(
+        rf"(?:\\global\s*)?\\(?:{assignment_names})\s*=\s*"
+        rf"[-+]?\d+(?:\.\d+)?(?:pt|bp|sp|truept)?"
+    )
+    def strip_inline_assignment(match):
+        line = match.group(0)
+        if line.lstrip().startswith("%"):
+            return line
+        return inline_assignment.sub("", line)
+    tex = re.sub(r"(?m)^.*$", strip_inline_assignment, tex)
+    # LuaTeX PDF extension primitives have no XeTeX equivalent. They are
+    # metadata hints, so discard complete commands while retaining adjacent code.
+    tex = re.sub(r"(?m)^([ \t]*)\\pdf(?:variable\b[^\n]*|extension\s+[^\n]*|catalog\b[^\n]*|glyphtounicode\b[^\n]*)$",
+                 lambda match: f"{match.group(1)}% XeTeX ignores PDFTeX metadata primitive", tex)
+    tex = re.sub(r"\\pdfglyphtounicode\s*\{[^{}]*\}\s*\{[^{}]*\}", "", tex)
+    inline_metadata = re.compile(
+        r"\\pdfcatalog\s*\{[^{}\n]*\}|"
+        r"\\pdf(?:pageattr|pagesattr)\s*\{[^{}\n]*\}|"
+        r"\\pdfvariable\s+[A-Za-z_]+(?:\s*=\s*|\s+)[^\s]+|"
+        r"\\pdfextension\s+[A-Za-z_]+(?:\s+[A-Za-z_]+)?(?:\s*\{[^{}\n]*\})?|"
+        r"\\pdfglyphtounicode\s*\{[^{}]*\}\s*\{[^{}]*\}"
+    )
+    def strip_inline_metadata(match):
+        line = match.group(0)
+        return line if line.lstrip().startswith("%") else inline_metadata.sub("", line)
+    tex = re.sub(r"(?m)^.*$", strip_inline_metadata, tex)
     # microtype's ligature toggles are a pdfTeX-only feature and are fatal in
     # XeTeX. They are typography hints, so drop the command and its arguments;
     # this also handles classes that put it after another command on one line.
@@ -273,22 +353,36 @@ def xetex_compatible(tex):
         options = [option for option in match[2].split(",")
                    if option.strip() not in ("pdftex", "dvips", "dvipdfm")]
         return match[1] + ",".join(options) + match[3]
-    tex = re.sub(r"(\\(?:usepackage|documentclass)\s*\[)([^\]]*)"
-                 r"(\]\s*\{(?:graphicx|graphics|color|xcolor|hyperref|geometry|pgf|tikz|article)\})",
+    tex = re.sub(r"(\\(?:usepackage|RequirePackage|PassOptionsToPackage|documentclass)\s*\[)([^\]]*)"
+                 r"(\]\s*\{[^{}\n]+\})",
                  drop_driver, tex)
+    # A few classes pass driver options with the braced form of
+    # ``\PassOptionsToPackage{pdftex}{graphicx}``.
+    def drop_braced_driver(match):
+        options = [option for option in match[2].split(",")
+                   if option.strip() not in ("pdftex", "dvips", "dvipdfm")]
+        return match[1] + ",".join(options) + match[3]
+    tex = re.sub(
+        r"(\\PassOptionsToPackage\s*\{)([^{}]*)(\}\s*\{[^{}\n]+\})",
+        drop_braced_driver, tex,
+    )
     # axessibility's accsupp driver also sets pdfTeX-only output parameters.
     # XeTeX writes Unicode mappings through xdvipdfmx. Keep the math tagging
     # macros and limit the compatibility definitions to loading that package.
-    axessibility = re.compile(r"(?m)^[ \t]*\\usepackage\[accsupp\]\{axessibility\}")
+    axessibility = re.compile(
+        r"\\(?:usepackage|RequirePackage)\s*\[[^\]]*accsupp[^\]]*\]\s*\{axessibility\}"
+    )
     def load_axessibility(match):
         commands = ("pdfcompresslevel", "pdfoptionpdfminorversion", "pdfgentounicode")
-        before = [r"\newcount\aptPDFsetting"]
+        before = [r"% ARXIV_TRANSLATOR_AXESSIBILITY", r"\newcount\aptPDFsetting"]
         before.extend("\\let\\" + name + r"\aptPDFsetting" for name in commands)
         before.append(r"\def\pdfglyphtounicode#1#2{}")
         after = ["\\let\\" + name + r"\undefined"
                  for name in (*commands, "pdfglyphtounicode")]
         return "\n".join([*before, match[0], *after])
-    return axessibility.sub(load_axessibility, tex, count=1)
+    if "% ARXIV_TRANSLATOR_AXESSIBILITY" not in tex:
+        tex = axessibility.sub(load_axessibility, tex, count=1)
+    return tex
 
 
 def configure_chinese(tex, font, preserve_layout=False):
@@ -296,19 +390,24 @@ def configure_chinese(tex, font, preserve_layout=False):
         raise ValueError("无效的中文字体名称")
     if not preserve_layout:
         tex = re.sub(r"(?m)^([ \t]*)\\linenumbers\b(?:\[[^\]\n]*\])?", r"\1", tex)
-    if re.search(r"\\usepackage(?:\[[^\]]*\])?\{xeCJK\}", COMMENT.sub("", tex)):
+    if re.search(r"\\(?:usepackage|RequirePackage)(?:\[[^\]]*\])?\{xeCJK\}", COMMENT.sub("", tex)):
         package = ""
     else:
         package = "\\usepackage{xeCJK}\n"
     # xeCJK provides Unicode text directly. Preserve legacy CJK group scopes.
-    tex = re.sub(r"(?m)^[ \t]*\\usepackage\{CJKutf8\}", lambda _:
-                 r"\newenvironment{CJK}[2]{}{}" + "\n" + r"\newenvironment{CJK*}[2]{}{}", tex)
+    tex = re.sub(
+        r"\\(?:usepackage|RequirePackage)(?:\[[^\]]*\])?\{CJK(?:utf8)?\}",
+        lambda _match: r"\relax",
+        tex,
+    )
     tex = xetex_compatible(tex)
     # The legacy Times package selects 8-bit fonts that drop Unicode characters
     # in references, code examples and prose under XeTeX.
-    legacy_times = re.search(r"(?m)^[ \t]*\\usepackage\{times\}", tex)
+    legacy_times = re.search(
+        r"(?m)^[ \t]*\\(?:usepackage|RequirePackage)(?:\[[^\]\n]*\])?\{times\}", tex
+    )
     if legacy_times:
-        tex = re.sub(r"(?m)^[ \t]*\\usepackage(?:\[[^\]\n]*\])?\{(?:times|fontenc|inputenc)\}",
+        tex = re.sub(r"(?m)^[ \t]*\\(?:usepackage|RequirePackage)(?:\[[^\]\n]*\])?\{(?:times|fontenc|inputenc)\}",
                      "", tex)
         package += (
             "\\setmainfont{Times New Roman}\n"
@@ -330,7 +429,15 @@ def configure_chinese(tex, font, preserve_layout=False):
             "Kaiti SC": r"[Path=/System/Library/Fonts/Supplemental/,Extension=.ttc,FontIndex=0]{Kaiti}",
         }
         font_option = font_specs.get(font, "{" + font + "}")
-    preamble = package + f"\\setCJKmainfont{font_option}\n\\microtypesetup{{protrusion=false,expansion=false,tracking=false}}\n"
+    cjk_shim = ("\\ifdefined\\CJK\\else\n"
+                "\\newenvironment{CJK}[2]{}{}\n"
+                "\\newenvironment{CJK*}[2]{}{}\n"
+                "\\providecommand{\\CJKtilde}{}\n"
+                "\\fi\n")
+    preamble = (package + cjk_shim + f"\\setCJKmainfont{font_option}\n"
+                "\\ifdefined\\microtypesetup\n"
+                "\\microtypesetup{protrusion=false,expansion=false,tracking=false}\n"
+                "\\fi\n")
     return re.sub(r"(?m)^[ \t]*\\begin\{document\}", lambda m: preamble + m[0], tex, count=1)
 
 
@@ -340,10 +447,13 @@ def enable_xetex_translation(tex):
         return tex
     return (
         "% ARXIV_TRANSLATOR_XETEX\n"
+        "\\ifdefined\\ifpdf\\else\\newif\\ifpdf\\pdffalse\\fi\n"
         "\\PassOptionsToPackage{table}{xcolor}\n"
-        "\\def\\pdfinfo#1{}\n"
-        "\\newdimen\\pdfpagewidth\n"
-        "\\newdimen\\pdfpageheight\n"
+        "\\ifdefined\\pdfinfo\\else\\def\\pdfinfo#1{}\\fi\n"
+        "\\ifdefined\\pdfoutput\\else\\newcount\\pdfoutput\\pdfoutput=1\\fi\n"
+        "\\ifdefined\\pdfpxdimen\\else\\newdimen\\pdfpxdimen\\fi\n"
+        "\\ifdefined\\pdfpagewidth\\else\\newdimen\\pdfpagewidth\\fi\n"
+        "\\ifdefined\\pdfpageheight\\else\\newdimen\\pdfpageheight\\fi\n"
         + tex
     )
 
@@ -384,10 +494,15 @@ def patch_xetex_sources(root):
     """Apply XeTeX compatibility to copied classes and packages."""
     changed = []
     for path in sorted(root.rglob("*")):
-        if path.suffix not in (".sty", ".cls") or not path.is_file():
+        if path.suffix.lower() not in STYLE_EXTENSIONS or not path.is_file():
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         patched = xetex_compatible(text)
+        patched = re.sub(
+            r"\\(?:usepackage|RequirePackage)(?:\[[^\]]*\])?\{CJK(?:utf8)?\}",
+            lambda _match: r"\relax",
+            patched,
+        )
         if patched != text:
             path.write_text(patched, encoding="utf-8")
             changed.append(path)
@@ -397,17 +512,18 @@ def patch_xetex_sources(root):
 def patch_pdftex_styles(root):
     """Make PDFLaTeX-only styles safe for the Unicode XeTeX build."""
     changed = patch_xetex_sources(root)
-    for path in sorted(root.rglob("*.sty")):
+    for path in sorted(path for path in root.rglob("*")
+                       if path.is_file() and path.suffix.lower() in STYLE_EXTENSIONS):
         text = path.read_text(encoding="utf-8", errors="replace")
         patched = text.replace(
             r"\RequirePDFTeX",
-            "% PDFLaTeX guard disabled for the Unicode translation build",
+            r"\relax",
         )
         for command in (r"\RequirePackage[T1]{fontenc}", r"\RequirePackage{newtxtext}",
                         r"\RequirePackage{helvet}", r"\RequirePackage{courier}"):
             patched = patched.replace(
                 command,
-                "% PDFLaTeX font package disabled for the Unicode translation build",
+                r"\relax",
             )
         if patched != text:
             path.write_text(patched, encoding="utf-8")
@@ -424,6 +540,22 @@ def output_paths(output, version, short_name):
     safe_name = safe_name.encode("utf-8")[:120].decode("utf-8", errors="ignore").rstrip(".-")
     suffix = "_" + safe_name if safe_name else ""
     return output / (stem + suffix + ".pdf"), output / (stem + "_latex" + suffix + ".zip")
+
+
+def publish_file(source, destination):
+    """Publish without overwriting, including when the work dir is another volume."""
+    try:
+        os.link(source, destination)
+        return
+    except OSError as error:
+        if error.errno not in (errno.EXDEV, errno.EPERM, errno.ENOTSUP, errno.EINVAL):
+            raise
+    temporary = destination.with_name(f".{destination.name}.partial")
+    try:
+        shutil.copyfile(source, temporary)
+        os.link(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def run(args, key):
@@ -508,14 +640,27 @@ def run(args, key):
         # The English reference may be built from a copy with those neutralized; the
         # delivered translation still starts from the untouched source.
         sources = {path: path.read_text(encoding="utf-8-sig", errors="replace")
-                   for path in sorted(build_source.rglob("*.tex"))}
-        if any(xetex_compatible(text) != text for text in sources.values()):
+                   for path in sorted(build_source.rglob("*"))
+                   if path.is_file() and (path.suffix.lower() in ROOT_EXTENSIONS
+                                          or path.suffix.lower() in STYLE_EXTENSIONS)}
+        if sources:
             compatible = work / "baseline-source"
             shutil.copytree(build_source, compatible)
+            # Patch package/class files once; patch_pdftex_styles includes the
+            # XeTeX pass and removes PDFLaTeX guards without re-wrapping them.
+            patch_pdftex_styles(compatible)
             for path, text in sources.items():
-                if xetex_compatible(text) != text:
+                if path.suffix.lower() not in ROOT_EXTENSIONS:
+                    continue
+                patched = xetex_compatible(text)
+                if patched != text:
                     (compatible / path.relative_to(build_source)).write_text(
-                        xetex_compatible(text), encoding="utf-8")
+                        patched, encoding="utf-8")
+            compatible_root = compatible / relative_root
+            compatible_root.write_text(
+                enable_xetex_translation(compatible_root.read_text(encoding="utf-8-sig")),
+                encoding="utf-8",
+            )
             shutil.rmtree(work / "baseline", ignore_errors=True)
             try:
                 baseline, baseline_pages = build(compatible / relative_root, work / "baseline",
@@ -561,8 +706,10 @@ def run(args, key):
             if not args.original_layout:
                 content = bilingual_title(documents[path][0], content)
             content = configure_chinese(content, args.font, args.original_layout)
-            if requires_pdftex:
-                content = enable_xetex_translation(content)
+            # The root may use pdfTeX primitives without declaring
+            # ``\RequirePDFTeX``.  Install guarded XeTeX shims for every
+            # Unicode translation so those files fail only when truly invalid.
+            content = enable_xetex_translation(content)
             if not args.original_layout:
                 content = re.sub(r"(?m)^[ \t]*\\begin\{document\}",
                              lambda match: HOOK + match[0], content, count=1)
@@ -694,14 +841,14 @@ def run(args, key):
     print(f"自动核验完成，待复核事项：{'；'.join(findings)}", flush=True)
     print(f"验收报告：{report}", flush=True)
     if archive:
-        os.link(archive, zip_destination)
+        publish_file(archive, zip_destination)
         try:
-            os.link(pdf, destination)
+            publish_file(pdf, destination)
         except OSError:
             zip_destination.unlink()
             raise
     else:
-        os.link(pdf, destination)
+        publish_file(pdf, destination)
     print(f"PDF 已保存：{destination}", flush=True)
     if getattr(args, "zotero", False):
         paper_id = re.sub(r"v\d+$", "", identifier)

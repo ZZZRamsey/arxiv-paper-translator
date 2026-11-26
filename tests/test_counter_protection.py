@@ -1,7 +1,8 @@
 import unittest
 import tempfile
 from pathlib import Path
-from paper_translate.translate import validate_structure, Translator
+from paper_translate.translate import (bilingual_title, title_content,
+                                       validate_structure, Translator)
 from paper_translate.cli import repair_model_tex
 from paper_translate.translate import OPAQUE, mask
 from paper_translate.fonts import FONT_FILE, ensure_cjk_font
@@ -42,6 +43,39 @@ class CounterProtectionTests(unittest.TestCase):
                 validate_structure(original, corrupt)
         validate_structure(original + r'\section{Appendix}', original + r'\section{附录}')
 
+    def test_structure_rejects_environment_and_reference_changes(self):
+        original = r'\begin{figure}\label{fig:overview}\end{figure} See~\ref{fig:overview}.'
+        with self.assertRaises(ValueError):
+            validate_structure(original, r'\begin{table}\label{fig:overview}\end{table} See~\ref{fig:overview}.')
+        with self.assertRaises(ValueError):
+            validate_structure(original, r'\begin{figure}\label{fig:changed}\end{figure} See~\ref{fig:changed}.')
+
+    def test_multiline_titles_and_nested_options_are_protected(self):
+        source = '\\title[\nShort title\n]{Long title}\n\\begin{document}'
+        self.assertEqual(title_content(source), (22, 32))
+        masked, saved = mask(r'\subfloat[Caption [detail]]{asset/a.pdf}')
+        self.assertEqual(masked, '[[[T0]]]')
+        self.assertEqual(saved, [r'\subfloat[Caption [detail]]{asset/a.pdf}'])
+
+    def test_definition_and_resource_commands_are_opaque(self):
+        for source in (
+            r'\newenvironment{foo}[1]{\textbf{#1}}{\endgroup}',
+            r'\def\foo#1{#1 + English}',
+            r'\DeclareMathOperator{\argmax}{arg\,max}',
+            r'\lstinputlisting[language=Python]{src/example.py}',
+            r'\inputminted[fontsize=\small]{python}{src/example.py}',
+            r'\verb|a_b|',
+            r'\mintinline{python}|a_b|',
+        ):
+            masked, saved = mask(source)
+            self.assertEqual(masked, '[[[T0]]]', source)
+            self.assertEqual(saved, [source], source)
+
+    def test_layout_options_leave_visible_text_translatable(self):
+        masked, saved = mask(r'\raisebox{-.5\height}[0pt][0pt]{English text}')
+        self.assertEqual(masked, '[[[T0]]][[[T1]]]English text[[[T2]]]')
+        self.assertEqual(saved, [r'\raisebox{-.5\height}[0pt][0pt]', '{', '}'])
+
     def test_bad_local_cache_is_not_reused(self):
         with tempfile.TemporaryDirectory() as directory:
             model = Translator('', 'test', Path(directory), max_requests=0, local='http://localhost:11434')
@@ -50,6 +84,14 @@ class CounterProtectionTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 model.translate_local(source)
             self.assertEqual(model.hits, 0)
+
+    def test_local_cache_allows_number_words_to_become_digits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model = Translator('', 'test', Path(directory), max_requests=0, local='http://localhost:11434')
+            source = 'The run takes three minutes.'
+            model.cache_path(source).write_text('运行需要 3 分钟。')
+            self.assertEqual(model.translate_local(source), '运行需要 3 分钟。')
+            self.assertEqual(model.hits, 1)
 
     def test_zotero_does_not_match_empty_note_title(self):
         from paper_translate.zotero import ZoteroLocal
@@ -72,3 +114,10 @@ class CounterProtectionTests(unittest.TestCase):
         result = configure_chinese("\\documentclass{article}\n\\begin{document}测试\\end{document}", 'Songti SC')
         self.assertIn('Extension=.ttc,FontIndex=0', result)
         self.assertIn('\\microtypesetup{protrusion=false,expansion=false,tracking=false}', result)
+        self.assertIn('\\ifdefined\\microtypesetup', result)
+
+    def test_bilingual_title_drops_a_dangling_translated_linebreak(self):
+        original = '\\title{Original \\\\for Embodied Intelligence}\n\\begin{document}'
+        translated = '\\title{具身智能规划 \\\\}\n\\begin{document}'
+        result = bilingual_title(original, translated)
+        self.assertIn(r'{\large 具身智能规划}\par', result)

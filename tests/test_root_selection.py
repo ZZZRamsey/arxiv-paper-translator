@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from paper_translate.cli import locate_root, root_candidates
+from paper_translate.cli import input_tree, locate_root, root_candidates
 from paper_translate.zotero import ZoteroLocal
 
 class RootSelectionTests(unittest.TestCase):
@@ -27,3 +27,14 @@ class RootSelectionTests(unittest.TestCase):
         self.assertTrue(ZoteroLocal._is_translation({"itemType": "attachment", "filename": "2601.13719_zh_CN_HAVEN.pdf"}))
         self.assertTrue(ZoteroLocal._is_translation({"itemType": "attachment", "title": "论文 中文译本"}))
         self.assertFalse(ZoteroLocal._is_translation({"itemType": "attachment", "title": "论文 中文译本", "deleted": True}))
+
+    def test_import_tree_resolves_subimport_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            root = source / "main.tex"
+            child = source / "sections" / "intro.tex"
+            child.parent.mkdir()
+            root.write_text(r"\documentclass{article}\begin{document}\subimport{sections/}{intro}\end{document}")
+            child.write_text("English introduction")
+            documents = input_tree(root, source)
+            self.assertEqual(set(documents), {root.resolve(), child.resolve()})

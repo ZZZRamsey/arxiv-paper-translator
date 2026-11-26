@@ -92,10 +92,15 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("% \\pdfoutput=1", result)
         self.assertIn("XeTeX ignores pdfTeX setting: \\pdfsuppressptexinfo=15", result)
         self.assertIn("XeTeX ignores pdfTeX setting: \\pdfcompresslevel = 9", result)
+        self.assertEqual(xetex_compatible(r"\RequirePDFTeX\documentclass{article}"),
+                         r"\relax\documentclass{article}")
+        self.assertEqual(xetex_compatible(r"foo \pdfvariable suppress_optional_info 512 bar"), "foo  bar")
+        self.assertEqual(xetex_compatible(r"\ifnum\pdfoutput=1\relax\fi"),
+                         r"\ifnum\pdfoutput=1\relax\fi")
         self.assertEqual(xetex_compatible("\\usepackage[pdftex, final]{graphicx}"), "\\usepackage[ final]{graphicx}")
         self.assertEqual(xetex_compatible("\\usepackage[pdftex]{graphicx}"), "\\usepackage[]{graphicx}")
         self.assertEqual(xetex_compatible("\\includegraphics[width=360px, height=2.5px]{a.pdf} 12px wide"),
-                         "\\includegraphics[width=360bp, height=2.5bp]{a.pdf} 12bp wide")
+                         "\\includegraphics[width=360bp, height=2.5bp]{a.pdf} 12px wide")
         self.assertEqual(texcache.missing_files("warning: Could not read encoding file: cm-super-t1.enc\n"),
                          ["cm-super-t1.enc"])
         self.assertIn(r"\let\pdfcompresslevel\aptPDFsetting", result)

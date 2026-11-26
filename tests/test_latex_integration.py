@@ -48,7 +48,11 @@ class LatexIntegration(unittest.TestCase):
             )
             pdf, pages = build(root, work / "out", work / "build.log", source)
             self.assertEqual(pages, 2)
-            self.assertEqual(direct_links(pdf)["links"], {"ref-": 2, "cite-": 2})
+            navigation = direct_links(pdf)
+            self.assertEqual(navigation["links"], {"ref-": 2, "cite-": 2})
+            # Post-processing mutates named destinations into page arrays; a
+            # second verification pass must remain safe and stable.
+            self.assertEqual(direct_links(pdf), navigation)
             document = PdfReader(pdf)
             forward = [a.get_object()["/A"]["/D"] for a in document.pages[0]["/Annots"]]
             back = [a.get_object()["/A"]["/D"] for a in document.pages[1]["/Annots"]]

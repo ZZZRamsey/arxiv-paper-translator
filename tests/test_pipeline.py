@@ -133,6 +133,15 @@ class TranslationTests(unittest.TestCase):
             self.assertEqual([path.name for path in changed], ["aaai.sty"])
             self.assertEqual(detect_engine(source, root), "tectonic")
 
+    def test_xetex_shims_are_conditional_and_driver_options_are_removed(self):
+        source = r"\pdfinfo{ /Title (Paper) }\documentclass{article}\RequirePackage[pdftex]{graphicx}\PassOptionsToPackage{dvips}{xcolor}"
+        translated = enable_xetex_translation(source)
+        self.assertIn(r"\ifdefined\pdfinfo\else", translated)
+        self.assertIn(r"\ifdefined\pdfpagewidth\else", translated)
+        from paper_translate.cli import xetex_compatible
+        self.assertNotIn(r"[pdftex]", xetex_compatible(translated))
+        self.assertNotIn(r"{dvips}", xetex_compatible(translated))
+
     def test_bilingual_title_preserves_original_tex_and_short_title(self):
         original = "\\title[Short]{The \\emph{Original}}\n\\begin{document}"
         translated = "\\title[Short]{中文标题}\n\\begin{document}"
